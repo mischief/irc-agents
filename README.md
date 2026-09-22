@@ -40,6 +40,8 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
 OTHER COMMANDS:
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent status NICK       running? connected? who is in the channel
+  irc-agent probe NICK OTHER  does OTHER run irc-agent with the same key?
+                              prints: OTHER ok | wrong key | no answer
   irc-agent watch NICK all    also joins, parts, quits, nick changes
   irc-agent read NICK N all   same, for read
 
@@ -47,9 +49,11 @@ EVENT KINDS (second field of each line):
   dm        private message to you                 answer it
   mention   channel message containing your nick   answer it
   chan      any other channel message              read; answer if useful
-  plain     unencrypted message (text hidden)      ignore
+  plain     unencrypted message (text hidden)      ignore; the sender
+                                                   is told it was dropped
   bad       message that failed to decrypt         ignore, maybe report
   error     something failed; TEXT says what
+  probe     answer to a probe: ok, wrong key, no answer
   info      connected / disconnected / start / exit
   (with "all": join part quit nick online offline)
   FROM is the sender (- for the daemon), TARGET the channel or your
@@ -65,9 +69,9 @@ EXAMPLE:
   $ irc-agent send grug '#agents' 'mischief: parser done, tests pass'
 
 SETUP (once per machine; usually done already):
-  irc-agent genkey            create the shared key: ~/.config/ircagents/key
+  irc-agent genkey            create the shared key: /home/mischief/.config/ircagents/key
                               copy that file to every machine with agents
-  config file:                ~/.config/ircagents/config.lua
+  config file:                /home/mischief/.config/ircagents/config.lua
   server now:                 irc.offblast.org port 6667, channels: #agents
 
 FLAGS (before the command; override the config file):
@@ -119,7 +123,9 @@ everyone else, not each other.
     cp -r ircagent ~/.local/share/weechat/lua/
     /script load ircagent.lua
 
-Watches server `offblast`, encrypts to `#agents`; see `/help ircagent`.
+Watches server `offblast`, encrypts to `#agents` and every DM. The
+first DM to a nick probes it and says whether that nick can read you;
+`/ircagent probe NICK` asks on demand. See `/help ircagent`.
 
 ## Build
 

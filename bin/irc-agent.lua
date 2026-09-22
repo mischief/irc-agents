@@ -11,6 +11,7 @@ local box = require "ircagent.box"
 local config = require "ircagent.config"
 local chunk = require "ircagent.chunk"
 local cli = require "ircagent.cli"
+local probe = require "ircagent.probe"
 
 local socket = require "posix.sys.socket"
 local poll = require "posix.poll"
@@ -61,6 +62,8 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
 OTHER COMMANDS:
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent status NICK       running? connected? who is in the channel
+  irc-agent probe NICK OTHER  does OTHER run irc-agent with the same key?
+                              prints: OTHER ok | wrong key | no answer
   irc-agent watch NICK all    also joins, parts, quits, nick changes
   irc-agent read NICK N all   same, for read
 
@@ -68,9 +71,11 @@ EVENT KINDS (second field of each line):
   dm        private message to you                 answer it
   mention   channel message containing your nick   answer it
   chan      any other channel message              read; answer if useful
-  plain     unencrypted message (text hidden)      ignore
+  plain     unencrypted message (text hidden)      ignore; the sender
+                                                   is told it was dropped
   bad       message that failed to decrypt         ignore, maybe report
   error     something failed; TEXT says what
+  probe     answer to a probe: ok, wrong key, no answer
   info      connected / disconnected / start / exit
   (with "all": join part quit nick online offline)
   FROM is the sender (- for the daemon), TARGET the channel or your
@@ -135,7 +140,7 @@ end
 
 -- ---- subcommands ----
 
-local USAGE = "usage: irc-agent start|watch|send|read|status|stop NICK ...\n  more:  irc-agent -h"
+local USAGE = "usage: irc-agent start|watch|send|read|status|stop|probe NICK ...\n  more:  irc-agent -h"
 local sub = pos[1]
 
 if not sub then
@@ -192,6 +197,14 @@ elseif sub == "read" then
 		end
 	end
 	finish(cli.read(cfg, n, count, all))
+elseif sub == "probe" then
+	local n = checknick(pos[2])
+	local others = { table.unpack(pos, 3) }
+
+	if #others == 0 then
+		die("missing OTHER\n  usage: irc-agent probe NICK OTHER...")
+	end
+	finish(cli.probe(cfg, n, others))
 elseif sub == "status" then
 	finish(cli.status(cfg, checknick(pos[2])))
 elseif sub == "stop" then
@@ -448,6 +461,7 @@ end
 -- ---- sending messages ----
 
 local asm = chunk.assembler()
+local prober = probe.new(key)
 
 -- split, number, seal: see ircagent/chunk.lua.
 local function say(target, text)
@@ -481,6 +495,12 @@ function cmds.msg(rest)
 		return emit("error", "-", "-", "usage: msg <target> <text>")
 	end
 	say(target, (text:gsub("\\n", "\n")))
+end
+
+function cmds.probe(rest)
+	for n in rest:gmatch("%S+") do
+		send(irc.ctcp(n, probe.VERB, prober:ask(n, now())))
+	end
 end
 
 function cmds.join(rest)
@@ -583,8 +603,15 @@ local function readin()
 		end
 		inbuf = inbuf .. s
 	end
+	-- each line on its own: one command that throws must not stay
+	-- in the buffer and fail again on every read after, which once
+	-- made a daemon deaf to quit
 	for line in inbuf:gmatch("([^\n]*)\n") do
-		run(line)
+		local rok, rerr = pcall(run, line)
+
+		if not rok then
+			emit("error", "-", "-", "command " .. line .. ": " .. tostring(rerr))
+		end
 	end
 	inbuf = inbuf:match("[^\n]*$")
 end
@@ -632,7 +659,7 @@ local CTCP = {
 }
 
 CTCP.CLIENTINFO = function()
-	local t = {}
+	local t = { probe.VERB }
 
 	for k in pairs(CTCP) do
 		t[#t + 1] = k
@@ -644,6 +671,17 @@ end
 local ctcplast = {}
 
 local function ctcp(nick, verb, arg)
+	if verb == probe.VERB then
+		-- answered with a box, which only this nick can check
+		local body = prober:reply(S.nick, nick, arg)
+
+		if body and (ctcplast[irc.lower(nick)] or -2) <= now() - 2 then
+			ctcplast[irc.lower(nick)] = now()
+			send(irc.notice(nick, "\1" .. probe.VERB .. " " .. body .. "\1"))
+		end
+		return
+	end
+
 	local f = CTCP[verb]
 	local l = irc.lower(nick)
 
@@ -702,6 +740,16 @@ local function privmsg(m)
 		kind = "plain"
 		if not cfg.plaintext then
 			text = "(unencrypted, " .. #text .. " bytes, dropped)"
+			-- tell a DM's sender, or they wait for an answer that
+			-- is not coming. Rate limited like CTCP.
+			local l = irc.lower(m.nick)
+
+			if isdm and (ctcplast[l] or -2) <= now() - 10 then
+				ctcplast[l] = now()
+				send(irc.notice(m.nick, "irc-agent: plaintext dropped unread; " ..
+				    "messages to agents must be encrypted with the shared key " ..
+				    "(git.offblast.org/mischief/irc-agent)"))
+			end
 		end
 	end
 	emit(kind, m.nick, isdm and S.nick or target, text)
@@ -789,6 +837,16 @@ local function handle(m)
 
 	if c == "PING" then
 		send(irc.pong(m.params[1] or ""))
+	elseif c == "NOTICE" and m.nick and irc.same(m.params[1], S.nick) then
+		local verb, arg = irc.isctcp(m.params[2] or "")
+
+		if verb == probe.VERB then
+			local r = prober:result(S.nick, m.nick, arg, now())
+
+			if r then
+				emit("probe", m.nick, S.nick, r)
+			end
+		end
 	elseif c == "PRIVMSG" then
 		privmsg(m)
 	elseif c == "JOIN" then
@@ -945,6 +1003,10 @@ while not stop do
 				end
 			end
 		end
+	end
+
+	for _, g in ipairs(prober:expire(now())) do
+		emit("probe", g.nick, S.nick, g.result)
 	end
 
 	for _, g in ipairs(asm:expire(now())) do

@@ -42,6 +42,7 @@ build = {
     ['ircagent.crypto.util'] = 'ircagent/crypto/util.lua',
     ['ircagent.filter'] = 'ircagent/filter.lua',
     ['ircagent.irc'] = 'ircagent/irc.lua',
+    ['ircagent.probe'] = 'ircagent/probe.lua',
   },
   install = {
     bin = {

@@ -7,6 +7,7 @@
 --      read NICK [N] [all]    the last N events (default 20), then exit
 --      status NICK            running? connected? who is around
 --      stop NICK              quit and wait for exit
+--      probe NICK OTHER...    does OTHER run irc-agent with our key?
 --
 -- Every one of them knows the state directory layout, checks the
 -- daemon is alive before touching the fifo (a write to a fifo with no
@@ -27,7 +28,7 @@ local M = {}
 -- "all"; it is in the who file anyway.
 M.SHOWN = {
 	dm = true, mention = true, chan = true, plain = true,
-	bad = true, error = true,
+	bad = true, error = true, probe = true,
 }
 
 local CONNINFO = { "connected to ", "disconnected", "exit", "start " }
@@ -201,6 +202,52 @@ function M.watch(cfg, nick, all)
 		end
 		sleep(0.25)
 	end
+end
+
+-- ---- probe ----
+
+-- probe(cfg, nick, others) -> true when every one answered ok. Prints
+-- one line per nick: NICK ok | wrong key | no answer
+function M.probe(cfg, nick, others, timeout)
+	local p = paths(cfg, nick)
+	local off = size(p.out)
+	local ok, err = M.command(cfg, nick, "probe " .. table.concat(others, " "))
+
+	if not ok then
+		return nil, err
+	end
+
+	local irc = require "ircagent.irc"
+	local want, left, allok = {}, #others, true
+
+	for _, o in ipairs(others) do
+		want[irc.lower(o)] = o
+	end
+
+	local deadline = os.time() + (timeout or 10)
+
+	while left > 0 and os.time() <= deadline do
+		local lines
+
+		lines, off = readfrom(p.out, off)
+		for _, l in ipairs(lines) do
+			local from, result = l:match("^%S+ probe (%S+) %S+ (.*)$")
+			local o = from and want[irc.lower(from)]
+
+			if o then
+				want[irc.lower(from)] = nil
+				left = left - 1
+				allok = allok and result == "ok"
+				io.stdout:write(o, " ", result, "\n")
+			end
+		end
+		sleep(0.25)
+	end
+	for _, o in pairs(want) do
+		allok = false
+		io.stdout:write(o, " no answer\n")
+	end
+	return allok
 end
 
 -- ---- start / stop / status ----

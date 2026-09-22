@@ -15,6 +15,10 @@
 --      /ircagent                    status
 --      /ircagent add [target]       encrypt to a channel or nick
 --      /ircagent del [target]       stop
+--      /ircagent probe [target]     does target run irc-agent, same key?
+--
+-- The first DM to a nick each session probes it too, and says in the
+-- query buffer whether that nick can read what you send.
 --      /ircagent reload             re-read options and key
 --
 -- Options (plugins.var.lua.ircagent.*):
@@ -52,6 +56,8 @@ if not ok then
 end
 
 local box = require "ircagent.box"
+local probe = require "ircagent.probe"
+local irc = require "ircagent.irc"
 
 -- ---- options ----
 
@@ -81,13 +87,14 @@ end
 -- ---- state ----
 
 local filters = {}   -- server -> filter
+local probers = {}   -- server -> probe
 local key
 
 local function setup()
 	local path = weechat.config_get_plugin("key_file"):gsub("^~/", home .. "/")
 	local k, kerr = box.loadkey(path)
 
-	filters, key = {}, k
+	filters, probers, key = {}, {}, k
 	if not k then
 		return err(kerr)
 	end
@@ -95,6 +102,7 @@ local function setup()
 	local targets = list(weechat.config_get_plugin("targets"))
 
 	for _, s in ipairs(list(weechat.config_get_plugin("servers"))) do
+		probers[s] = probe.new(k)
 		filters[s] = filter.new({ key = k, targets = targets,
 		    all_dms = weechat.config_string_to_boolean(
 		        weechat.config_get_plugin("all_dms")) == 1 })
@@ -136,6 +144,17 @@ function ircagent_out(_, _, server, line)
 		return line
 	end
 
+	-- first DM to a nick this session: ask whether it can read us.
+	-- The message still goes out sealed; the answer only tells you.
+	local target = line:match("^PRIVMSG (%S+) ")
+	local p = probers[server]
+
+	if target and p and not irc.ischannel(target) and f:encrypts(target)
+	    and not p.known[irc.lower(target)] and not p:pending_for(target) then
+		weechat.command("", "/quote -server " .. server .. " PRIVMSG " ..
+		    target .. " :\1" .. probe.VERB .. " " .. p:ask(target, os.time()) .. "\1")
+	end
+
 	local okk, out = pcall(f.outbound, f, line,
 	    weechat.info_get("irc_nick", server))
 
@@ -152,6 +171,79 @@ function ircagent_out(_, _, server, line)
 end
 
 weechat.hook_modifier("irc_in2_privmsg", "ircagent_in", "")
+
+local function pvbuffer(server, nick)
+	local b = weechat.buffer_search("irc", server .. "." .. nick)
+
+	if b == "" then
+		b = weechat.buffer_search("irc", "server." .. server)
+	end
+	return b
+end
+
+local SAYS = {
+	ok = "runs irc-agent with our key; messages are encrypted",
+	["wrong key"] = "answers but holds a DIFFERENT key; it cannot read you",
+	["no answer"] = "did not answer a probe: no irc-agent, or an old one; it may not read you",
+}
+
+local function report(server, nick, r)
+	weechat.print(pvbuffer(server, nick), (r == "ok" and "" or
+	    weechat.prefix("error")) .. NAME .. ": " .. nick .. " " .. SAYS[r])
+end
+
+-- answers to our probes, and probes from others, both arrive as CTCP:
+-- a NOTICE for the answer, a PRIVMSG for the question. Hidden from the
+-- buffer either way; the result is printed instead.
+function ircagent_notice(_, _, server, line)
+	local p = probers[server]
+	local m = p and irc.parse(line)
+
+	if not m or not m.nick then
+		return line
+	end
+
+	local verb, arg = irc.isctcp(m.params[2] or "")
+
+	if verb ~= probe.VERB then
+		return line
+	end
+
+	local r = p:result(weechat.info_get("irc_nick", server), m.nick, arg, os.time())
+
+	if r then
+		report(server, m.nick, r)
+	end
+	return ""
+end
+
+function ircagent_ctcp(_, _, server, line)
+	local p = probers[server]
+	local m = p and irc.parse(line)
+
+	if not m or not m.nick then
+		return line
+	end
+
+	local verb, arg = irc.isctcp(m.params[2] or "")
+
+	if verb ~= probe.VERB then
+		return line
+	end
+
+	local body = p:reply(weechat.info_get("irc_nick", server), m.nick, arg)
+
+	if body then
+		weechat.command("", "/quote -server " .. server .. " NOTICE " ..
+		    m.nick .. " :\1" .. probe.VERB .. " " .. body .. "\1")
+	end
+	return ""
+end
+
+weechat.hook_modifier("irc_in2_notice", "ircagent_notice", "")
+-- runs before ircagent_in on the same line; returns it untouched
+-- unless it is a probe
+weechat.hook_modifier("1000|irc_in2_privmsg", "ircagent_ctcp", "")
 weechat.hook_modifier("irc_out1_privmsg", "ircagent_out", "")
 
 -- WeeChat prints what we typed from the line we returned above -- the
@@ -180,6 +272,11 @@ end
 weechat.hook_line("", "irc.*", "irc_privmsg+self_msg", "ircagent_line", "")
 
 function ircagent_timer()
+	for s, p in pairs(probers) do
+		for _, g in ipairs(p:expire(os.time())) do
+			report(s, g.nick, g.result)
+		end
+	end
 	for s, f in pairs(filters) do
 		for _, msg in ipairs(f:expire(os.time())) do
 			weechat.print(weechat.buffer_search("irc", "server." .. s),
@@ -189,7 +286,7 @@ function ircagent_timer()
 	return weechat.WEECHAT_RC_OK
 end
 
-weechat.hook_timer(10 * 1000, 0, 0, "ircagent_timer", "")
+weechat.hook_timer(2 * 1000, 0, 0, "ircagent_timer", "")
 
 -- ---- /ircagent ----
 
@@ -211,6 +308,14 @@ function ircagent_cmd(_, buffer, args)
 	end
 	if target == "" then
 		target = weechat.buffer_get_string(buffer, "localvar_channel")
+	end
+	if verb == "probe" and target ~= "" then
+		local p = probers[s]
+
+		weechat.command("", "/quote -server " .. s .. " PRIVMSG " .. target ..
+		    " :\1" .. probe.VERB .. " " .. p:ask(target, os.time()) .. "\1")
+		weechat.print(buffer, NAME .. ": probing " .. target)
+		return weechat.WEECHAT_RC_OK
 	end
 	if verb == "add" and target ~= "" then
 		f:add(target)
@@ -235,8 +340,9 @@ function ircagent_cmd(_, buffer, args)
 end
 
 weechat.hook_command(NAME, "irc-agent encryption",
-    "[add|del [target]] | reload",
+    "[add|del|probe [target]] | reload",
     "   add: encrypt to target (default: this buffer)\n" ..
     "   del: stop encrypting to target\n" ..
+    " probe: ask target whether it runs irc-agent with our key\n" ..
     "reload: re-read options and key",
-    "add|del|reload", "ircagent_cmd", "")
+    "add|del|probe|reload", "ircagent_cmd", "")
