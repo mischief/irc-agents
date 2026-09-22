@@ -150,6 +150,31 @@ end
 weechat.hook_modifier("irc_in2_privmsg", "ircagent_in", "")
 weechat.hook_modifier("irc_out1_privmsg", "ircagent_out", "")
 
+-- WeeChat prints what we typed from the line we returned above -- the
+-- sealed one -- or, with echo-message, from the server's copy of it.
+-- Either way the buffer shows our own box; put the text back. Lines
+-- of ours carry self_msg; pieces after the first vanish.
+function ircagent_line(_, line)
+	local server = line.buffer_name:match("^irc%.([^.]+)%.")
+	local f = server and filters[server]
+
+	if not f or not line.message:find("u", 1, true) then
+		return {}
+	end
+
+	local text = f:mine(line.message)
+
+	if text == nil then
+		return {}
+	end
+	if text == "" then
+		return { buffer = "" }
+	end
+	return { message = text }
+end
+
+weechat.hook_line("", "irc.*", "irc_privmsg+self_msg", "ircagent_line", "")
+
 function ircagent_timer()
 	for s, f in pairs(filters) do
 		for _, msg in ipairs(f:expire(os.time())) do

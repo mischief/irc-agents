@@ -42,6 +42,10 @@ function M.new(opts)
 		seen = {},
 		max_age = opts.max_age or 300,
 		learn = opts.learn ~= false,
+		-- wire -> { text, first } for what we sealed, so a client
+		-- that echoes its own line back can show the text instead
+		sent = {},
+		nsent = 0,
 	}, F)
 
 	for _, t in ipairs(opts.targets or {}) do
@@ -148,11 +152,40 @@ function F:outbound(line, mynick)
 	end
 
 	local out = {}
+	local wires = chunk.seal(self.key, mynick, target, text)
 
-	for _, w in ipairs(chunk.seal(self.key, mynick, target, text)) do
+	-- bounded: a client that never shows its own lines must not grow
+	-- this forever
+	if self.nsent > 256 then
+		self.sent, self.nsent = {}, 0
+	end
+	for i, w in ipairs(wires) do
 		out[#out + 1] = (irc.privmsg(target, w):gsub("\r\n$", ""))
+		self.sent[w] = { text = text, first = i == 1 }
+		self.nsent = self.nsent + 1
 	end
 	return out
+end
+
+-- mine(shown) -> text, or "" to hide, or nil when shown holds no box we
+-- sealed. For the client's own echo of what it sent: the first piece
+-- becomes the whole text, the other pieces disappear.
+function F:mine(shown)
+	for w in shown:gmatch("u[%w_-]+") do
+		local e = self.sent[w]
+
+		if e then
+			self.sent[w] = nil
+			self.nsent = self.nsent - 1
+			if not e.first then
+				return ""
+			end
+			local i, j = shown:find(w, 1, true)
+
+			return shown:sub(1, i - 1) .. M.LOCK .. e.text .. shown:sub(j + 1)
+		end
+	end
+	return nil
 end
 
 -- for a timer: pieces that never completed, as text worth showing.

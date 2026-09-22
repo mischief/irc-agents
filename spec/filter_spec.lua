@@ -94,4 +94,19 @@ describe("filter", function()
 		f:inbound(l, "me", os.time())
 		assert.matches("replayed", f:inbound(l, "me", os.time())[1])
 	end)
+
+	it("shows our own echoed lines as text", function()
+		local f = filter.new({ key = KEY, targets = { "#agents" } })
+		local text = ("y"):rep(700)
+		local out = f:outbound("PRIVMSG #agents :" .. text, "me")
+		local w1 = irc.parse(out[1]).params[2]
+		local w2 = irc.parse(out[2]).params[2]
+
+		assert.equal(filter.LOCK .. text, f:mine(w1))
+		assert.equal("", f:mine(w2))
+		assert.is_nil(f:mine(w1))
+		assert.is_nil(f:mine("plain words"))
+		assert.equal("me\t" .. filter.LOCK .. "hi",
+		    f:mine("me\t" .. irc.parse(f:outbound("PRIVMSG #agents hi", "me")[1]).params[2]))
+	end)
 end)
