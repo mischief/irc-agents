@@ -113,8 +113,13 @@ setup()
 
 -- ---- modifiers ----
 
--- irc_in2_privmsg: the line after charset decoding. Lines returned
--- newline-separated are handled as that many messages; an empty string
+-- irc_in_privmsg: the raw line, before WeeChat splits the modifier's
+-- result on newlines and decodes the charset. It has to be this one:
+-- a multi-line message becomes several PRIVMSG lines, and only
+-- irc_in's result is split -- irc_in2's is parsed as one message, so
+-- every line after the first showed up as raw ":nick!user@host
+-- PRIVMSG ..." text. Boxes are ASCII and the text inside is UTF-8, so
+-- the charset step after this sees what it expects. An empty string
 -- drops the line.
 function ircagent_in(_, _, server, line)
 	local f = filters[server]
@@ -170,7 +175,7 @@ function ircagent_out(_, _, server, line)
 	return out[1]
 end
 
-weechat.hook_modifier("irc_in2_privmsg", "ircagent_in", "")
+weechat.hook_modifier("irc_in_privmsg", "ircagent_in", "")
 
 local function pvbuffer(server, nick)
 	local b = weechat.buffer_search("irc", server .. "." .. nick)
