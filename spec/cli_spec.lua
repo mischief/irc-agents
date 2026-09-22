@@ -9,10 +9,17 @@ local function ev(kind, from, to, text)
 end
 
 describe("cli.shown", function()
-	it("shows messages and problems", function()
-		for _, k in ipairs { "dm", "mention", "chan", "plain", "bad", "error" } do
+	it("shows what is addressed to you, and problems", function()
+		for _, k in ipairs { "dm", "mention", "plain", "bad", "error", "probe" } do
 			assert.is_true(cli.shown(ev(k, "a", "#x", "t")), k)
 		end
+	end)
+
+	it("shows other channel talk only at level chan or all", function()
+		assert.is_false(cli.shown(ev("chan", "a", "#x", "t")))
+		assert.is_true(cli.shown(ev("chan", "a", "#x", "t"), "chan"))
+		assert.is_true(cli.shown(ev("chan", "a", "#x", "t"), "all"))
+		assert.is_false(cli.shown(ev("join", "a", "#x", ""), "chan"))
 	end)
 
 	it("shows the connection coming and going, not other info", function()
@@ -25,7 +32,7 @@ describe("cli.shown", function()
 	it("hides presence churn unless asked", function()
 		for _, k in ipairs { "join", "part", "quit", "nick", "online", "offline" } do
 			assert.is_false(cli.shown(ev(k, "a", "#x", "")), k)
-			assert.is_true(cli.shown(ev(k, "a", "#x", ""), true), k)
+			assert.is_true(cli.shown(ev(k, "a", "#x", ""), "all"), k)
 		end
 	end)
 end)
@@ -52,7 +59,7 @@ describe("cli.read", function()
 		io.stdout = { write = function(_, ...)
 			got[#got + 1] = table.concat({ ... })
 		end, flush = function() end }
-		cli.read({ dir = dir }, "n", 2, false)
+		cli.read({ dir = dir }, "n", 2, "chan")
 		io.stdout = real
 		os.execute("rm -rf " .. dir)
 

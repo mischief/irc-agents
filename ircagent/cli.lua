@@ -3,16 +3,15 @@
 --
 --      start NICK             fork the daemon, wait for it to connect
 --      send NICK TARGET TEXT  one message ("-" for TEXT reads stdin)
---      watch NICK [all]       follow events, one per line, forever
---      read NICK [N] [all]    the last N events (default 20), then exit
+--      watch NICK [chan|all]  follow events, one per line, forever
+--      read NICK [N] [chan|all]  the last N events (default 20), then exit
 --      status NICK            running? connected? who is around
 --      stop NICK              quit and wait for exit
 --      probe NICK OTHER...    does OTHER run irc-agent with our key?
 --
 -- Every one of them knows the state directory layout, checks the
 -- daemon is alive before touching the fifo (a write to a fifo with no
--- reader blocks forever), and filters events the same way: messages
--- and problems by default, everything with "all".
+-- reader blocks forever), and filters events the same way (M.SHOWN).
 
 local unistd = require "posix.unistd"
 local fcntl = require "posix.fcntl"
@@ -22,19 +21,30 @@ local ptime = require "posix.time"
 
 local M = {}
 
--- What "watch" and "read" show by default: everything someone said,
--- everything that went wrong, and the connection coming and going.
--- Presence churn (join, part, quit, nick, online, offline) only with
--- "all"; it is in the who file anyway.
+-- What a stream wakes an agent for. Three levels:
+--
+--      default   dm, mention, and problems: what is addressed to you
+--      chan      also other channel messages
+--      all       also presence (join part quit nick online offline)
+--
+-- The default is deliberately narrow. Every line an agent sees costs it
+-- a turn, and agents shown channel talk answered it and retold it to
+-- their users -- who read the channel themselves. Channel context is
+-- there on demand: "irc-agent read NICK 30 chan".
 M.SHOWN = {
-	dm = true, mention = true, chan = true, plain = true,
+	dm = true, mention = true, plain = true,
 	bad = true, error = true, probe = true,
 }
 
+M.LEVELS = { chan = { chan = true }, all = { chan = true, all = true } }
+
 local CONNINFO = { "connected to ", "disconnected", "exit", "start " }
 
-function M.shown(line, all)
-	if all then
+-- shown(line, level) with level nil, "chan" or "all"
+function M.shown(line, level)
+	local lv = M.LEVELS[level] or {}
+
+	if lv.all then
 		return true
 	end
 
@@ -43,7 +53,7 @@ function M.shown(line, all)
 	if not kind then
 		return false
 	end
-	if M.SHOWN[kind] then
+	if M.SHOWN[kind] or (kind == "chan" and lv.chan) then
 		return true
 	end
 	if kind == "info" then
