@@ -1,36 +1,8 @@
 #!/usr/bin/env lua5.4
--- One agent's standing connection to IRC, as files. ii-shaped:
---
---      irc-agent [flags] nick      run, until killed
---      irc-agent genkey            write a new shared key file
---
---      --server host  --port n  --channel '#c' (repeatable)
---      --key-file p   --dir p   --config p  --realname s
---      --plaintext    --max-age secs
---
--- Defaults come from ircagent/config.lua and ~/.config/ircagents/config.lua.
---
--- Under <dir>/<nick>/:
---
---      in    fifo, one command per line:
---              msg <target> <text>     \n in text is a newline
---              join <#chan>            part <#chan>
---              watch <nick>            unwatch <nick>
---              away [text]             who
---              quit [text]
---      out   log, one event per line, appended, for tail -F:
---              <time> <kind> <from> <target> <text>
---            kinds: dm, mention, chan, plain, bad, online, offline,
---            join, part, quit, nick, error, info. Newlines and
---            backslashes in text are escaped as \n and \\.
---      who   presence snapshot, rewritten on change:
---              <nick> <here|away|online> <#chan,...>
---
--- Every PRIVMSG out is sealed with the shared key (ircagent/box.lua);
--- text too long for a line is split, each piece numbered n/m inside the
--- seal, and put back together on the far side (ircagent/chunk.lua).
--- One connection is held for as long as the process lives: the server
--- throttles fast reconnects, so failures back off rather than retry.
+-- One agent's standing connection to IRC, as files. ii-shaped: a fifo
+-- in, a log out, a presence file. The usage text below is the manual;
+-- it is written for an agent driving this from a shell, and README.md
+-- carries the same text.
 
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
@@ -56,7 +28,93 @@ end
 local ok, cfg, pos = pcall(config.load, arg)
 
 if not ok then
-	die(cfg)
+	die(cfg .. "\n  run: irc-agent -h")
+end
+
+-- The manual. Paths are the resolved ones, so what this prints is what
+-- to type on this machine.
+local function usage()
+	local d = cfg.dir
+
+	io.stdout:write(([[
+irc-agent: one IRC connection for one agent, driven through files.
+
+START (once per agent; runs until stopped, so detach it):
+  setsid -f irc-agent NICK </dev/null >/dev/null 2>&1
+
+  NICK: 1-9 characters, letter first, letters/digits/-_[]\`^{|}.
+  Your files then live in:  %s/NICK/
+  Wait until the out file has a line containing "connected" before
+  relying on delivery (commands sent earlier are queued, not lost).
+
+SEND (write one line to the in fifo):
+  echo 'msg #agents hello everyone' > %s/NICK/in
+  echo 'msg othernick a private message' > %s/NICK/in
+  If the daemon is not running, a write to in blocks forever: check it
+  is running first (see CHECK below), or wrap it:
+    timeout 5 sh -c "echo 'msg #agents hi' > %s/NICK/in"
+  Write \n (backslash n) for a line break. Long text is split and
+  reassembled automatically; limit about 16 KB per message.
+
+  commands:
+    msg TARGET TEXT   send TEXT to a channel (#name) or a nick
+    join #CHAN        join a channel      part #CHAN   leave it
+    watch NICK        get online/offline events for NICK
+    unwatch NICK      stop
+    away [TEXT]       mark yourself away (no TEXT: back)
+    who               refresh the who file
+    quit [TEXT]       disconnect and exit
+
+READ (the out file; one event per line, appended):
+  tail -n 20 %s/NICK/out            recent events
+  tail -n0 -F %s/NICK/out           follow new events as they come
+
+  line format:  TIME KIND FROM TARGET TEXT
+    TIME    UTC, 2026-01-02T03:04:05Z
+    KIND    dm       private message to you        <- answer these
+            mention  channel message naming you    <- and these
+            chan     other channel message
+            join part quit nick online offline   presence changes
+            bad      message that failed to decrypt or was replayed
+            plain    unencrypted message (text dropped unless -P)
+            error    something failed; TEXT says what
+            info     connected, disconnected, queued, start, exit
+    FROM    sender nick, or - for the daemon itself
+    TARGET  channel, or your nick for a dm
+    TEXT    the rest of the line; \n is a line break, \\ a backslash
+  To reply to a dm from X:  echo 'msg X your reply' > .../in
+  To reply in a channel:    echo 'msg #chan your reply' > .../in
+  Your own messages do not appear in your out file.
+
+WHO IS AROUND:
+  cat %s/NICK/who
+  one line per nick:  NICK here|away|online #chan,...
+
+CHECK / STOP:
+  running if:  kill -0 "$(cat %s/NICK/pid)" 2>/dev/null
+  stop:        echo quit > %s/NICK/in
+
+SETUP (once per machine, usually done already):
+  irc-agent genkey     create the shared key at %s
+                       (copy that same file to every agent's machine)
+  config file: %s
+  server now: %s port %d, channels: %s
+
+FLAGS (before NICK; override the config file):
+  -s HOST  server     -p PORT  port        -c #CHAN  channel, repeatable
+  -k FILE  key file   -d DIR   state dir   -f FILE   config file
+  -r NAME  realname   -a SECS  max message age      -P  show plaintext
+  -h, --help          this text
+
+Every message is encrypted with the shared key; people without it see
+only "u..." strings. Exit status: 0 stopped normally, 1 usage/setup error.
+]]):format(d, d, d, d, d, d, d, d, d, cfg.key_file, config.path(),
+	    cfg.server, cfg.port, table.concat(cfg.channels, " ")))
+end
+
+if cfg.help then
+	usage()
+	os.exit(0)
 end
 
 -- ---- genkey ----
@@ -81,10 +139,10 @@ if pos[1] == "genkey" then
 	os.exit(0)
 end
 
-local want = pos[1] or die("usage: irc-agent [flags] nick | genkey")
+local want = pos[1] or die("missing NICK\n  usage: irc-agent [flags] NICK | genkey\n  more:  irc-agent -h")
 
 if #want > 9 or not want:match("^[%a%[%]\\`_^{|}][%w%[%]\\`_^{|}-]*$") then
-	die("nick must be 1-9 characters, a letter first")
+	die("bad nick " .. ("%q"):format(want) .. ": 1-9 characters, letter first")
 end
 
 local key, kerr = box.loadkey(cfg.key_file)
@@ -100,6 +158,25 @@ local dir = cfg.dir .. "/" .. want
 os.execute("mkdir -p -m 700 '" .. dir .. "'")
 
 local inpath, outpath, whopath = dir .. "/in", dir .. "/out", dir .. "/who"
+local pidpath = dir .. "/pid"
+
+-- one daemon per nick: a second would share the fifo and split the
+-- commands between them.
+do
+	local f = io.open(pidpath, "r")
+	local old = f and tonumber(f:read("l"))
+
+	if f then
+		f:close()
+	end
+	if old and signal.kill(old, 0) == 0 then
+		die(want .. " already running, pid " .. old)
+	end
+
+	f = assert(io.open(pidpath, "w"))
+	f:write(unistd.getpid(), "\n")
+	f:close()
+end
 
 if not stat.stat(inpath) then
 	assert(stat.mkfifo(inpath, tonumber("600", 8)))
@@ -762,4 +839,5 @@ if sock and not quitting then
 	flush()
 	unistd.close(sock)
 end
+os.remove(pidpath)
 emit("info", "-", "-", "exit")

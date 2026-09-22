@@ -108,61 +108,63 @@ function M.file(path)
 	return t
 end
 
--- Command line flags, getopt-ish and long only:
+-- Command line flags, through luaposix getopt (short options only;
+-- luaposix has no getopt_long). "+" stops at the first operand, so the
+-- nick or subcommand ends the flags; ":" reports a missing argument
+-- apart from an unknown flag.
 --
---      --server host   --port n    --channel '#c' (repeatable)
---      --key-file p    --dir p     --config p     --plaintext
+--      -s host   -p port   -c chan (repeatable)   -k keyfile
+--      -d dir    -f config -r realname  -a maxage  -P (plaintext)
+--      -h        help
 --
--- plus the nick as the one positional argument. Returns the overrides
--- and the positionals, or errors on anything it does not know.
-local FLAGS = {
-	server = "string", port = "number", ["key-file"] = "string",
-	dir = "string", config = "string", channel = "list",
-	realname = "string", plaintext = "bool", ["max-age"] = "number",
+-- "--help" is accepted too, since it is the first thing anyone tries.
+M.OPTSTRING = "+:hPs:p:c:k:d:f:r:a:"
+
+local OPTS = {
+	s = "server", p = "port", c = "channels", k = "key_file",
+	d = "dir", f = "config", r = "realname", a = "max_age",
+	P = "plaintext", h = "help",
 }
 
+-- args(argv) -> overrides, operands. argv is Lua's arg table; errors
+-- with a message on a bad flag.
 function M.args(argv)
-	local o, pos = {}, {}
-	local i = 1
+	local getopt = require("posix.unistd").getopt
+	local a = { [0] = argv[0] or "irc-agent" }
 
-	while i <= #argv do
-		local a = argv[i]
-		local name, val = a:match("^%-%-([%w-]+)=(.*)$")
+	for i = 1, #argv do
+		a[i] = argv[i] == "--help" and "-h" or argv[i]
+	end
 
-		name = name or a:match("^%-%-([%w-]+)$")
-		if name then
-			local kind = FLAGS[name]
+	local o, last = {}, 1
 
-			if not kind then
-				error("unknown flag --" .. name, 0)
-			end
-
-			local key = name:gsub("-", "_")
-
-			if kind == "bool" then
-				o[key] = true
-			else
-				if not val then
-					i = i + 1
-					val = argv[i]
-				end
-				if not val then
-					error("--" .. name .. " wants a value", 0)
-				end
-				if kind == "number" then
-					o[key] = tonumber(val) or
-					    error("--" .. name .. ": not a number", 0)
-				elseif kind == "list" then
-					o.channels = o.channels or {}
-					o.channels[#o.channels + 1] = val
-				else
-					o[key] = val
-				end
-			end
-		else
-			pos[#pos + 1] = a
+	for r, optarg, optind in getopt(a, M.OPTSTRING) do
+		last = optind
+		if r == "?" then
+			error("unknown flag -" .. (a[optind - 1] or ""):sub(2), 0)
+		elseif r == ":" then
+			error("flag " .. a[optind - 1] .. " wants a value", 0)
 		end
-		i = i + 1
+
+		local key = OPTS[r]
+
+		if key == "channels" then
+			o.channels = o.channels or {}
+			o.channels[#o.channels + 1] = optarg
+		elseif key == "port" or key == "max_age" then
+			o[key] = tonumber(optarg) or
+			    error("-" .. r .. ": not a number: " .. optarg, 0)
+		elseif key == "plaintext" or key == "help" then
+			o[key] = true
+		else
+			o[key] = optarg
+		end
+	end
+
+	local pos = {}
+
+	for i = last, #a do
+		pos[#pos + 1] = a[i]
 	end
 	return o, pos
 end
