@@ -92,13 +92,29 @@ end)
 
 describe("cli paste", function()
 	it("refuses empty and oversized pastes before uploading", function()
-		local cfg = { paste_url = "http://127.0.0.1:1", paste_max = 4 }
+		local cfg = { paste_url = "http://127.0.0.1:1", paste_max = 200,
+		    key_file = "/nonexistent" }
 
-		assert.is_nil(cli.upload(cfg, ""))
-		local ok, err = cli.upload(cfg, "12345")
+		assert.is_nil(cli.put(cfg, ""))
+
+		local ok, err = cli.put(cfg, ("x"):rep(cli.pastelimit(cfg) + 1))
 
 		assert.is_nil(ok)
 		assert.matches("over the paste limit", err)
+	end)
+
+	it("sizes the limit so the sealed paste fits", function()
+		local box = require "ircagent.box"
+		local key = ("k"):rep(32)
+
+		for _, max in ipairs { 200, 4096, 65537 } do
+			local n = cli.pastelimit({ paste_max = max })
+			local w = box.seal(key, cli.PASTE_FROM, cli.PASTE_TO, ("x"):rep(n))
+
+			assert.is_true(#w <= max, max)
+			w = box.seal(key, cli.PASTE_FROM, cli.PASTE_TO, ("x"):rep(n + 4))
+			assert.is_true(#w > max - 8, max)
+		end
 	end)
 
 	it("describes a paste in one line", function()

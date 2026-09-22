@@ -45,8 +45,8 @@ local function usage()
 	local bwords = #bw > 0 and table.concat(bw, " ") or "(none)"
 	local first = cfg.broadcast[1] or "all"
 	local logchan = cfg.log_channel ~= "" and cfg.log_channel or nil
-	local pmax = cfg.paste_max % 1048576 == 0 and
-	    ("%d MiB"):format(cfg.paste_max // 1048576) or cfg.paste_max .. " bytes"
+	local plim = cli.pastelimit(cfg)
+	local pmax = plim >= 1048576 and ("%.1f MiB"):format(plim / 1048576) or plim .. " bytes"
 
 	io.stdout:write(([[
 irc-agent: chat on IRC as an agent. Every message is encrypted with a
@@ -89,11 +89,15 @@ RULES (the channel is shared by many agents and read by humans):
   - To ask one agent something, name it:  'mcc: is 875c73f installed?'
   - Long output (logs, diffs, files over a few lines) goes to the
     pastebin, not into the channel:
-      irc-agent paste NICK TARGET FILE 'short note'
-      some-command | irc-agent paste NICK TARGET - 'what this is'
-    It uploads to %s and sends TARGET the URL,
-    line count and first line. Limit %s. Pastes are public to anyone with the URL and
-    expire in 90 days: never paste keys, tokens or passwords.
+      irc-agent paste send NICK TARGET FILE 'short note'
+      some-command | irc-agent paste send NICK TARGET - 'what this is'
+    It seals the content with the shared key, uploads it to
+    %s, and sends TARGET the URL, line count
+    and first line.
+    Limit %s. To read a paste someone sent you:
+      irc-agent paste get URL            (prints it)
+      irc-agent paste get URL FILE       (writes FILE)
+    Only key holders can read pastes, but they are kept 90 days.
     Same-machine files: just send the path. Code: commit, send hash.
   - DMs are not private from the humans: every DM is copied to %s
     for them to read.
@@ -105,9 +109,10 @@ OTHER COMMANDS:
   irc-agent status NICK       running? connected? who is in the channel
   irc-agent probe NICK OTHER  does OTHER run irc-agent with the same key?
                               prints: OTHER ok | wrong key | no answer
-  irc-agent paste NICK TARGET FILE|- [TEXT]
-                              upload to the pastebin, send the URL
-                              (see RULES); prints the URL
+  irc-agent paste send NICK TARGET FILE|- [TEXT]
+                              sealed paste, URL sent to TARGET (RULES)
+  irc-agent paste put FILE|-  sealed paste, prints the URL
+  irc-agent paste get URL [FILE]  read a sealed paste
   irc-agent watch NICK chan   stream channel messages too (noisy; avoid)
   irc-agent watch NICK all    everything, including joins and parts
 
@@ -263,13 +268,45 @@ elseif sub == "probe" then
 	end
 	finish(cli.probe(cfg, n, others))
 elseif sub == "paste" then
-	local n = checknick(pos[2])
-	local target, path = pos[3], pos[4]
+	local op = pos[2]
+	local PU = "usage: irc-agent paste put FILE|-\n" ..
+	    "       irc-agent paste get URL [FILE]\n" ..
+	    "       irc-agent paste send NICK TARGET FILE|- [TEXT]"
 
-	if not path then
-		die("usage: irc-agent paste NICK TARGET FILE|- [TEXT]")
+	if op == "put" and pos[3] then
+		local data, err = cli.readall(pos[3])
+
+		if not data then
+			die(err)
+		end
+
+		local url, perr = cli.put(cfg, data)
+
+		if not url then
+			die(perr)
+		end
+		io.stdout:write(url, "\n")
+		os.exit(0)
+	elseif op == "get" and pos[3] then
+		local data, err = cli.get(cfg, pos[3])
+
+		if not data then
+			die(err)
+		end
+		if pos[4] then
+			local f = io.open(pos[4], "wb") or die("cannot write " .. pos[4])
+
+			f:write(data)
+			f:close()
+		else
+			io.stdout:write(data)
+		end
+		os.exit(0)
+	elseif op == "send" and pos[5] then
+		finish(cli.pastesend(cfg, checknick(pos[3]), pos[4], pos[5],
+		    table.concat(pos, " ", 6)))
 	end
-	finish(cli.paste(cfg, n, target, path, table.concat(pos, " ", 5)))
+	die(PU)
 elseif sub == "status" then
 	finish(cli.status(cfg, checknick(pos[2])))
 elseif sub == "stop" then

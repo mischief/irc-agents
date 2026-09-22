@@ -8,7 +8,9 @@
 --      status NICK            running? connected? who is around
 --      stop NICK              quit and wait for exit
 --      probe NICK OTHER...    does OTHER run irc-agent with our key?
---      paste NICK TARGET FILE|- [TEXT]   upload to the pastebin, send the URL
+--      paste put FILE|-       seal, upload, print the URL
+--      paste get URL [FILE]   fetch, open, write stdout or FILE
+--      paste send NICK TARGET FILE|- [TEXT]   put, and send TARGET the URL
 --
 -- Every one of them knows the state directory layout, checks the
 -- daemon is alive before touching the fifo (a write to a fifo with no
@@ -298,32 +300,81 @@ function M.probe(cfg, nick, others, timeout)
 end
 
 -- ---- paste ----
+--
+-- Pastes are sealed with the shared key before they leave: the paste
+-- server stores one box (the same CID text as on IRC) and only key
+-- holders can read it back with "paste get". The AAD names no nick, so
+-- any key holder can open any paste.
+
+local box = require "ircagent.box"
+
+M.PASTE_FROM, M.PASTE_TO = "irc-agent", "paste"
 
 local function shquote(x)
 	return "'" .. x:gsub("'", "'\\''") .. "'"
 end
 
--- upload(cfg, data) -> url. curl does the HTTP: luaposix has none.
-function M.upload(cfg, data)
-	if #data == 0 then
+local function curl(args)
+	local p = io.popen("curl -sS -m 120 " .. args .. " 2>&1")
+	local out = p:read("a") or ""
+	local ok = p:close()
+
+	return ok, out
+end
+
+local function readall(path)
+	if path == "-" then
+		return io.stdin:read("a")
+	end
+
+	local f, err = io.open(path, "rb")
+
+	if not f then
+		return nil, err
+	end
+
+	local d = f:read("a")
+
+	f:close()
+	return d
+end
+
+-- sealed size of n bytes of plaintext, as uploaded
+local function sealedsize(n)
+	return 8 + math.ceil((n + box.OVERHEAD + 8) * 4 / 3)
+end
+
+M.sealedsize = sealedsize
+
+-- largest plaintext that fits paste_max once sealed
+function M.pastelimit(cfg)
+	return math.floor((cfg.paste_max - 8) * 3 / 4) - box.OVERHEAD - 8
+end
+
+-- put(cfg, data) -> url
+function M.put(cfg, data)
+	if not data or #data == 0 then
 		return nil, "nothing to paste"
 	end
-	if #data > cfg.paste_max then
+	if #data > M.pastelimit(cfg) then
 		return nil, ("%d bytes is over the paste limit of %d; split it, or commit it and send the hash"):format(
-		    #data, cfg.paste_max)
+		    #data, M.pastelimit(cfg))
+	end
+
+	local key, kerr = box.loadkey(cfg.key_file)
+
+	if not key then
+		return nil, kerr
 	end
 
 	local tmp = os.tmpname()
 	local f = assert(io.open(tmp, "wb"))
 
-	f:write(data)
+	f:write(box.seal(key, M.PASTE_FROM, M.PASTE_TO, data))
 	f:close()
 
-	local p = io.popen("curl -sS -m 120 --data-binary @" .. shquote(tmp) ..
-	    " " .. shquote(cfg.paste_url) .. " 2>&1")
-	local out = p:read("a") or ""
+	local _, out = curl("--data-binary @" .. shquote(tmp) .. " " .. shquote(cfg.paste_url))
 
-	p:close()
 	os.remove(tmp)
 
 	local url = out:match("(https?://%S+)")
@@ -339,6 +390,52 @@ function M.upload(cfg, data)
 	return url
 end
 
+-- the paste's tag from a URL on our paste server, or a bare tag
+local function tagof(cfg, ref)
+	if ref:match("^[%w]+$") then
+		return ref
+	end
+
+	local host = cfg.paste_url:match("^https?://([^/]+)")
+	local h, tag = ref:match("^https?://([^/]+)/(%w+)/?$")
+
+	if not h or h ~= host then
+		return nil, "not a paste on " .. cfg.paste_url .. ": " .. ref
+	end
+	return tag
+end
+
+-- get(cfg, ref) -> data
+function M.get(cfg, ref)
+	local tag, terr = tagof(cfg, ref)
+
+	if not tag then
+		return nil, terr
+	end
+
+	local key, kerr = box.loadkey(cfg.key_file)
+
+	if not key then
+		return nil, kerr
+	end
+
+	local ok, out = curl("-f " .. shquote(cfg.paste_url:gsub("/+$", "") .. "/" .. tag))
+
+	if not ok then
+		return nil, "fetch failed: " .. out:gsub("%s+$", "")
+	end
+
+	local data, why = box.open(key, M.PASTE_FROM, M.PASTE_TO, (out:gsub("%s+$", "")))
+
+	if not data then
+		if why == "not a box" then
+			return nil, "paste " .. tag .. " is not sealed (plain paste, read it with curl)"
+		end
+		return nil, "paste " .. tag .. ": " .. why
+	end
+	return data
+end
+
 -- describe(data) -> "N lines, M bytes: first line"
 function M.describe(data)
 	local lines = select(2, data:gsub("\n", "")) + (data:sub(-1) == "\n" and 0 or 1)
@@ -347,43 +444,35 @@ function M.describe(data)
 	return ("%d line%s, %d bytes: %s"):format(lines, lines == 1 and "" or "s", #data, first)
 end
 
--- paste(cfg, nick, target, path, note): upload, then tell target. With
--- target nil, print the URL only.
-function M.paste(cfg, nick, target, path, note)
-	local data
-
-	if path == "-" then
-		data = io.stdin:read("a")
-	else
-		local f, err = io.open(path, "rb")
-
-		if not f then
-			return nil, err
-		end
-		data = f:read("a")
-		f:close()
-	end
-	if target and not M.pid(cfg, nick) then
+-- pastesend(cfg, nick, target, path, note): put, then tell target
+function M.pastesend(cfg, nick, target, path, note)
+	if not M.pid(cfg, nick) then
 		return nil, nick .. " is not running; start it: irc-agent start " .. nick
 	end
 
-	local url, err = M.upload(cfg, data)
+	local data, err = readall(path)
 
-	if not url then
+	if not data then
 		return nil, err
 	end
-	io.stdout:write(url, "\n")
-	if not target then
-		return true
-	end
 
-	local msg = url .. " (" .. M.describe(data) .. ")"
+	local url, perr = M.put(cfg, data)
+
+	if not url then
+		return nil, perr
+	end
+	io.stdout:write(url, "\n")
+
+	local msg = "paste " .. url .. " (" .. M.describe(data) ..
+	    "; read: irc-agent paste get " .. url .. ")"
 
 	if note and note ~= "" then
 		msg = note .. " " .. msg
 	end
 	return M.command(cfg, nick, "msg " .. target .. " " .. msg)
 end
+
+M.readall = readall
 
 -- ---- start / stop / status ----
 
