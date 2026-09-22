@@ -8,6 +8,7 @@
 --      status NICK            running? connected? who is around
 --      stop NICK              quit and wait for exit
 --      probe NICK OTHER...    does OTHER run irc-agent with our key?
+--      paste NICK TARGET FILE|- [TEXT]   upload to the pastebin, send the URL
 --
 -- Every one of them knows the state directory layout, checks the
 -- daemon is alive before touching the fifo (a write to a fifo with no
@@ -294,6 +295,94 @@ function M.probe(cfg, nick, others, timeout)
 		io.stdout:write(o, " no answer\n")
 	end
 	return allok
+end
+
+-- ---- paste ----
+
+local function shquote(x)
+	return "'" .. x:gsub("'", "'\\''") .. "'"
+end
+
+-- upload(cfg, data) -> url. curl does the HTTP: luaposix has none.
+function M.upload(cfg, data)
+	if #data == 0 then
+		return nil, "nothing to paste"
+	end
+	if #data > cfg.paste_max then
+		return nil, ("%d bytes is over the paste limit of %d; split it, or commit it and send the hash"):format(
+		    #data, cfg.paste_max)
+	end
+
+	local tmp = os.tmpname()
+	local f = assert(io.open(tmp, "wb"))
+
+	f:write(data)
+	f:close()
+
+	local p = io.popen("curl -sS -m 120 --data-binary @" .. shquote(tmp) ..
+	    " " .. shquote(cfg.paste_url) .. " 2>&1")
+	local out = p:read("a") or ""
+
+	p:close()
+	os.remove(tmp)
+
+	local url = out:match("(https?://%S+)")
+
+	if not url then
+		return nil, "paste failed: " .. (out ~= "" and out:gsub("%s+$", "") or "no answer from " .. cfg.paste_url)
+	end
+	-- the server answers http://, which only redirects; hand out what
+	-- works, in the scheme paste_url was given in
+	if cfg.paste_url:match("^https:") then
+		url = url:gsub("^http:", "https:")
+	end
+	return url
+end
+
+-- describe(data) -> "N lines, M bytes: first line"
+function M.describe(data)
+	local lines = select(2, data:gsub("\n", "")) + (data:sub(-1) == "\n" and 0 or 1)
+	local first = (data:match("^%s*([^\n]*)") or ""):sub(1, 80)
+
+	return ("%d line%s, %d bytes: %s"):format(lines, lines == 1 and "" or "s", #data, first)
+end
+
+-- paste(cfg, nick, target, path, note): upload, then tell target. With
+-- target nil, print the URL only.
+function M.paste(cfg, nick, target, path, note)
+	local data
+
+	if path == "-" then
+		data = io.stdin:read("a")
+	else
+		local f, err = io.open(path, "rb")
+
+		if not f then
+			return nil, err
+		end
+		data = f:read("a")
+		f:close()
+	end
+	if target and not M.pid(cfg, nick) then
+		return nil, nick .. " is not running; start it: irc-agent start " .. nick
+	end
+
+	local url, err = M.upload(cfg, data)
+
+	if not url then
+		return nil, err
+	end
+	io.stdout:write(url, "\n")
+	if not target then
+		return true
+	end
+
+	local msg = url .. " (" .. M.describe(data) .. ")"
+
+	if note and note ~= "" then
+		msg = note .. " " .. msg
+	end
+	return M.command(cfg, nick, "msg " .. target .. " " .. msg)
 end
 
 -- ---- start / stop / status ----

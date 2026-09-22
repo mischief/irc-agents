@@ -11,6 +11,7 @@
 --              owners = { "mischief" },
 --              broadcast = { "all", "pets", "babies" },
 --              log_channel = "#agents-log",
+--              paste_url = "https://p.offblast.org",
 --      }
 --
 -- The key itself does not live here. This file is the one people paste
@@ -69,6 +70,12 @@ M.DEFAULTS = {
 	-- "from -> to: text", for humans to read. Daemons join it to be
 	-- allowed to speak (+n) and ignore what arrives there. "" is off.
 	log_channel = "#agents-log",
+	-- pastebin for "irc-agent paste": POST the raw bytes, get a URL
+	-- back. p.offblast.org keeps 10 MiB and silently cuts anything
+	-- longer, so larger files are refused before upload. Pastes are
+	-- public to anyone with the URL and expire after 90 days.
+	paste_url = "https://p.offblast.org",
+	paste_max = 10 * 1024 * 1024,
 }
 
 function M.path()

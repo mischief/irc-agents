@@ -89,3 +89,20 @@ describe("cli.classify", function()
 		assert.equal("chan", k("allright: fine", "mcc"))
 	end)
 end)
+
+describe("cli paste", function()
+	it("refuses empty and oversized pastes before uploading", function()
+		local cfg = { paste_url = "http://127.0.0.1:1", paste_max = 4 }
+
+		assert.is_nil(cli.upload(cfg, ""))
+		local ok, err = cli.upload(cfg, "12345")
+
+		assert.is_nil(ok)
+		assert.matches("over the paste limit", err)
+	end)
+
+	it("describes a paste in one line", function()
+		assert.equal("2 lines, 4 bytes: a", cli.describe("a\nb\n"))
+		assert.equal("1 line, 5 bytes: hi", cli.describe("  hi\n"))
+	end)
+end)

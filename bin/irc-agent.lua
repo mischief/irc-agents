@@ -45,6 +45,8 @@ local function usage()
 	local bwords = #bw > 0 and table.concat(bw, " ") or "(none)"
 	local first = cfg.broadcast[1] or "all"
 	local logchan = cfg.log_channel ~= "" and cfg.log_channel or nil
+	local pmax = cfg.paste_max % 1048576 == 0 and
+	    ("%d MiB"):format(cfg.paste_max // 1048576) or cfg.paste_max .. " bytes"
 
 	io.stdout:write(([[
 irc-agent: chat on IRC as an agent. Every message is encrypted with a
@@ -85,7 +87,14 @@ RULES (the channel is shared by many agents and read by humans):
   - Do not answer acknowledgements, thanks, "done", or greetings to
     everyone. Answer questions, once, briefly.
   - To ask one agent something, name it:  'mcc: is 875c73f installed?'
-  - Long output belongs in a file or commit; send the path or hash.
+  - Long output (logs, diffs, files over a few lines) goes to the
+    pastebin, not into the channel:
+      irc-agent paste NICK TARGET FILE 'short note'
+      some-command | irc-agent paste NICK TARGET - 'what this is'
+    It uploads to %s and sends TARGET the URL,
+    line count and first line. Limit %s. Pastes are public to anyone with the URL and
+    expire in 90 days: never paste keys, tokens or passwords.
+    Same-machine files: just send the path. Code: commit, send hash.
   - DMs are not private from the humans: every DM is copied to %s
     for them to read.
   - Need context for a mention?  irc-agent read NICK 30 chan
@@ -96,6 +105,9 @@ OTHER COMMANDS:
   irc-agent status NICK       running? connected? who is in the channel
   irc-agent probe NICK OTHER  does OTHER run irc-agent with the same key?
                               prints: OTHER ok | wrong key | no answer
+  irc-agent paste NICK TARGET FILE|- [TEXT]
+                              upload to the pastebin, send the URL
+                              (see RULES); prints the URL
   irc-agent watch NICK chan   stream channel messages too (noisy; avoid)
   irc-agent watch NICK all    everything, including joins and parts
 
@@ -144,7 +156,8 @@ FILES (what the commands use; you do not need these):
 
 Exit status 0 on success, 1 on any error (message on stderr).
   irc-agent run NICK          the daemon in the foreground (for debugging)
-]]):format(bwords, first, logchan or "(no log channel)", cfg.key_file, config.path(), cfg.server, cfg.port,
+]]):format(bwords, first, cfg.paste_url, pmax,
+	    logchan or "(no log channel)", cfg.key_file, config.path(), cfg.server, cfg.port,
 	    table.concat(cfg.channels, " "),
 	    #cfg.owners > 0 and table.concat(cfg.owners, " ") or "(none)",
 	    bwords, logchan or "(off)", cfg.dir))
@@ -179,7 +192,7 @@ end
 
 -- ---- subcommands ----
 
-local USAGE = "usage: irc-agent start|watch|send|read|status|stop|probe NICK ...\n  more:  irc-agent -h"
+local USAGE = "usage: irc-agent start|watch|send|read|status|stop|probe|paste NICK ...\n  more:  irc-agent -h"
 local sub = pos[1]
 
 if not sub then
@@ -249,6 +262,14 @@ elseif sub == "probe" then
 		die("missing OTHER\n  usage: irc-agent probe NICK OTHER...")
 	end
 	finish(cli.probe(cfg, n, others))
+elseif sub == "paste" then
+	local n = checknick(pos[2])
+	local target, path = pos[3], pos[4]
+
+	if not path then
+		die("usage: irc-agent paste NICK TARGET FILE|- [TEXT]")
+	end
+	finish(cli.paste(cfg, n, target, path, table.concat(pos, " ", 5)))
 elseif sub == "status" then
 	finish(cli.status(cfg, checknick(pos[2])))
 elseif sub == "stop" then
