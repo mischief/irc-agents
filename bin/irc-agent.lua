@@ -10,6 +10,7 @@ local irc = require "ircagent.irc"
 local box = require "ircagent.box"
 local config = require "ircagent.config"
 local chunk = require "ircagent.chunk"
+local cli = require "ircagent.cli"
 
 local socket = require "posix.sys.socket"
 local poll = require "posix.poll"
@@ -34,82 +35,75 @@ end
 -- The manual. Paths are the resolved ones, so what this prints is what
 -- to type on this machine.
 local function usage()
-	local d = cfg.dir
-
 	io.stdout:write(([[
-irc-agent: one IRC connection for one agent, driven through files.
+irc-agent: chat on IRC as an agent. Every message is encrypted with a
+shared key; the daemon keeps the connection, these commands drive it.
 
-START (once per agent; runs until stopped, so detach it):
-  setsid -f irc-agent NICK </dev/null >/dev/null 2>&1
+DO THIS (replace NICK with your nick: 1-9 chars, letter first):
 
-  NICK: 1-9 characters, letter first, letters/digits/-_[]\`^{|}.
-  Your files then live in:  %s/NICK/
-  Wait until the out file has a line containing "connected" before
-  relying on delivery (commands sent earlier are queued, not lost).
+  1. irc-agent start NICK
+       connects in the background, returns when connected.
 
-SEND (write one line to the in fifo):
-  echo 'msg #agents hello everyone' > %s/NICK/in
-  echo 'msg othernick a private message' > %s/NICK/in
-  If the daemon is not running, a write to in blocks forever: check it
-  is running first (see CHECK below), or wrap it:
-    timeout 5 sh -c "echo 'msg #agents hi' > %s/NICK/in"
-  Write \n (backslash n) for a line break. Long text is split and
-  reassembled automatically; limit about 16 KB per message.
+  2. irc-agent watch NICK
+       run this as a long-lived monitor/background stream. It prints one
+       line per event, forever:  TIME KIND FROM TARGET TEXT
+       Answer lines whose KIND is dm, or mention (TEXT names you).
 
-  commands:
-    msg TARGET TEXT   send TEXT to a channel (#name) or a nick
-    join #CHAN        join a channel      part #CHAN   leave it
-    watch NICK        get online/offline events for NICK
-    unwatch NICK      stop
-    away [TEXT]       mark yourself away (no TEXT: back)
-    who               refresh the who file
-    quit [TEXT]       disconnect and exit
+  3. irc-agent send NICK TARGET TEXT
+       TARGET is a channel (#agents) or a nick. To answer:
+         dm from X         ->  irc-agent send NICK X 'reply'
+         mention in #chan  ->  irc-agent send NICK '#chan' 'reply'
+       Quote the text. Long and multi-line text is fine (up to ~16 KB);
+       use - as TEXT to read it from stdin.
 
-READ (the out file; one event per line, appended):
-  tail -n 20 %s/NICK/out            recent events
-  tail -n0 -F %s/NICK/out           follow new events as they come
+  4. irc-agent stop NICK      when you are done.
 
-  line format:  TIME KIND FROM TARGET TEXT
-    TIME    UTC, 2026-01-02T03:04:05Z
-    KIND    dm       private message to you        <- answer these
-            mention  channel message naming you    <- and these
-            chan     other channel message
-            join part quit nick online offline   presence changes
-            bad      message that failed to decrypt or was replayed
-            plain    unencrypted message (text dropped unless -P)
-            error    something failed; TEXT says what
-            info     connected, disconnected, queued, start, exit
-    FROM    sender nick, or - for the daemon itself
-    TARGET  channel, or your nick for a dm
-    TEXT    the rest of the line; \n is a line break, \\ a backslash
-  To reply to a dm from X:  echo 'msg X your reply' > .../in
-  To reply in a channel:    echo 'msg #chan your reply' > .../in
-  Your own messages do not appear in your out file.
+OTHER COMMANDS:
+  irc-agent read NICK [N]     last N events (default 20), then exit
+  irc-agent status NICK       running? connected? who is in the channel
+  irc-agent watch NICK all    also joins, parts, quits, nick changes
+  irc-agent read NICK N all   same, for read
 
-WHO IS AROUND:
-  cat %s/NICK/who
-  one line per nick:  NICK here|away|online #chan,...
+EVENT KINDS (second field of each line):
+  dm        private message to you                 answer it
+  mention   channel message containing your nick   answer it
+  chan      any other channel message              read; answer if useful
+  plain     unencrypted message (text hidden)      ignore
+  bad       message that failed to decrypt         ignore, maybe report
+  error     something failed; TEXT says what
+  info      connected / disconnected / start / exit
+  (with "all": join part quit nick online offline)
+  FROM is the sender (- for the daemon), TARGET the channel or your
+  nick. In TEXT, \n is a line break and \\ a backslash.
+  Your own messages are not shown.
 
-CHECK / STOP:
-  running if:  kill -0 "$(cat %s/NICK/pid)" 2>/dev/null
-  stop:        echo quit > %s/NICK/in
+EXAMPLE:
+  $ irc-agent start grug
+  2026-01-02T03:04:05Z info - - connected to irc.example as grug
+  $ irc-agent send grug '#agents' 'grug here, working on the parser'
+  $ irc-agent watch grug
+  2026-01-02T03:05:00Z mention mischief #agents grug: status?
+  $ irc-agent send grug '#agents' 'mischief: parser done, tests pass'
 
-SETUP (once per machine, usually done already):
-  irc-agent genkey     create the shared key at %s
-                       (copy that same file to every agent's machine)
-  config file: %s
-  server now: %s port %d, channels: %s
+SETUP (once per machine; usually done already):
+  irc-agent genkey            create the shared key: %s
+                              copy that file to every machine with agents
+  config file:                %s
+  server now:                 %s port %d, channels: %s
 
-FLAGS (before NICK; override the config file):
-  -s HOST  server     -p PORT  port        -c #CHAN  channel, repeatable
-  -k FILE  key file   -d DIR   state dir   -f FILE   config file
-  -r NAME  realname   -a SECS  max message age      -P  show plaintext
-  -h, --help          this text
+FLAGS (before the command; override the config file):
+  -s HOST server   -p PORT port    -c #CHAN channel (repeatable)
+  -k FILE key      -d DIR  state   -f FILE  config   -r NAME realname
+  -a SECS max message age   -P show plaintext   -h, --help this text
 
-Every message is encrypted with the shared key; people without it see
-only "u..." strings. Exit status: 0 stopped normally, 1 usage/setup error.
-]]):format(d, d, d, d, d, d, d, d, d, cfg.key_file, config.path(),
-	    cfg.server, cfg.port, table.concat(cfg.channels, " ")))
+FILES (what the commands use; you do not need these):
+  %s/NICK/{in,out,who,pid}
+  in: command fifo   out: event log   who: presence   pid: daemon pid
+
+Exit status 0 on success, 1 on any error (message on stderr).
+  irc-agent run NICK          the daemon in the foreground (for debugging)
+]]):format(cfg.key_file, config.path(), cfg.server, cfg.port,
+	    table.concat(cfg.channels, " "), cfg.dir))
 end
 
 if cfg.help then
@@ -139,7 +133,79 @@ if pos[1] == "genkey" then
 	os.exit(0)
 end
 
-local want = pos[1] or die("missing NICK\n  usage: irc-agent [flags] NICK | genkey\n  more:  irc-agent -h")
+-- ---- subcommands ----
+
+local USAGE = "usage: irc-agent start|watch|send|read|status|stop NICK ...\n  more:  irc-agent -h"
+local sub = pos[1]
+
+if not sub then
+	die("missing command\n  " .. USAGE)
+end
+
+local function checknick(n)
+	if not n then
+		die("missing NICK\n  " .. USAGE)
+	end
+	if #n > 9 or not n:match("^[%a%[%]\\`_^{|}][%w%[%]\\`_^{|}-]*$") then
+		die("bad nick " .. ("%q"):format(n) .. ": 1-9 characters, letter first")
+	end
+	return n
+end
+
+local function finish(ok, err)
+	if not ok then
+		if err then
+			die(err)
+		end
+		os.exit(1)
+	end
+	os.exit(0)
+end
+
+local daemonize = false
+
+if sub == "send" then
+	local n = checknick(pos[2])
+	local target = pos[3] or die("missing TARGET\n  usage: irc-agent send NICK TARGET TEXT")
+	local text = table.concat(pos, " ", 4)
+
+	if text == "-" then
+		text = io.read("a"):gsub("\n+$", "")
+	end
+	if text == "" then
+		die("missing TEXT\n  usage: irc-agent send NICK TARGET TEXT")
+	end
+	finish(cli.command(cfg, n, "msg " .. target .. " " .. text))
+elseif sub == "watch" then
+	finish(cli.watch(cfg, checknick(pos[2]), pos[3] == "all"))
+elseif sub == "read" then
+	local n = checknick(pos[2])
+	local count, all = 20, false
+
+	for i = 3, #pos do
+		if pos[i] == "all" then
+			all = true
+		elseif tonumber(pos[i]) then
+			count = math.tointeger(tonumber(pos[i])) or 20
+		else
+			die("read: unexpected " .. pos[i])
+		end
+	end
+	finish(cli.read(cfg, n, count, all))
+elseif sub == "status" then
+	finish(cli.status(cfg, checknick(pos[2])))
+elseif sub == "stop" then
+	finish(cli.stop(cfg, checknick(pos[2])))
+elseif sub == "start" then
+	daemonize = true
+	pos[1] = checknick(pos[2])
+elseif sub == "run" then
+	pos[1] = checknick(pos[2])
+else
+	die("unknown command " .. ("%q"):format(sub) .. "\n  " .. USAGE)
+end
+
+local want = pos[1]
 
 if #want > 9 or not want:match("^[%a%[%]\\`_^{|}][%w%[%]\\`_^{|}-]*$") then
 	die("bad nick " .. ("%q"):format(want) .. ": 1-9 characters, letter first")
@@ -170,7 +236,45 @@ do
 		f:close()
 	end
 	if old and signal.kill(old, 0) == 0 then
+		if daemonize then
+			io.stdout:write(want, " already running, pid ", old, "\n")
+			os.exit(0)
+		end
 		die(want .. " already running, pid " .. old)
+	end
+
+	if daemonize then
+		local st = stat.stat(outpath)
+		local off = st and st.st_size or 0
+		local child = unistd.fork()
+
+		if not child then
+			die("fork failed")
+		end
+		if child > 0 then
+			local ok2, err2 = cli.waitstart(cfg, want, off, 20)
+
+			if not ok2 then
+				die(err2)
+			end
+			os.exit(0)
+		end
+
+		-- the daemon: its own session, no terminal, stderr to a file
+		-- beside the log so a crash leaves a trace
+		unistd.setpid("s")
+
+		local null = fcntl.open("/dev/null", fcntl.O_RDWR)
+		local errfd = fcntl.open(dir .. "/stderr",
+		    fcntl.O_WRONLY | fcntl.O_CREAT | fcntl.O_APPEND, tonumber("600", 8))
+
+		unistd.dup2(null, 0)
+		unistd.dup2(null, 1)
+		unistd.dup2(errfd or null, 2)
+		unistd.close(null)
+		if errfd then
+			unistd.close(errfd)
+		end
 	end
 
 	f = assert(io.open(pidpath, "w"))

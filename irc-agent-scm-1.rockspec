@@ -33,6 +33,7 @@ build = {
   modules = {
     ['ircagent.box'] = 'ircagent/box.lua',
     ['ircagent.chunk'] = 'ircagent/chunk.lua',
+    ['ircagent.cli'] = 'ircagent/cli.lua',
     ['ircagent.cid'] = 'ircagent/cid.lua',
     ['ircagent.config'] = 'ircagent/config.lua',
     ['ircagent.crypto.aead'] = 'ircagent/crypto/aead.lua',
