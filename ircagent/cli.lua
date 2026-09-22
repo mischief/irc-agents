@@ -84,9 +84,15 @@ function M.pid(cfg, nick)
 	return nil
 end
 
+-- poll with no descriptors is a sleep every luaposix has; nanosleep
+-- is not exported everywhere (see now() in bin/irc-agent.lua).
 local function sleep(s)
-	ptime.nanosleep({ tv_sec = math.floor(s),
-	    tv_nsec = math.floor((s % 1) * 1e9) })
+	if ptime.nanosleep then
+		ptime.nanosleep({ tv_sec = math.floor(s),
+		    tv_nsec = math.floor((s % 1) * 1e9) })
+	else
+		require("posix.poll").poll({}, math.floor(s * 1000))
+	end
 end
 
 M.sleep = sleep

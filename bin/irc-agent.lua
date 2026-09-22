@@ -305,8 +305,18 @@ local out = assert(io.open(outpath, "a"))
 
 out:setvbuf("line")
 
-local function now()
-	return ptime.clock_gettime(ptime.CLOCK_MONOTONIC).tv_sec
+-- Monotonic seconds where luaposix has clock_gettime. OpenBSD's
+-- luaposix (36.2.1 and 36.3) exports CLOCK_MONOTONIC but not the
+-- function, so fall back to wall-clock seconds there: a clock step then
+-- moves the backoff and flood timers, which is survivable.
+local now
+
+if ptime.clock_gettime then
+	now = function()
+		return ptime.clock_gettime(ptime.CLOCK_MONOTONIC).tv_sec
+	end
+else
+	now = os.time
 end
 
 local function esc(s)
