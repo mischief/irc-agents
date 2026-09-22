@@ -49,6 +49,13 @@ describe("config", function()
 		os.remove(p)
 	end)
 
+	it("logs DMs to #agents-log unless told otherwise", function()
+		local c = config.load({ "-f", "/nonexistent/x.lua", "me" })
+
+		assert.equal("#agents-log", c.log_channel)
+		assert.same({ "mischief" }, c.owners)
+	end)
+
 	it("takes --help as -h", function()
 		assert.is_true(config.args({ "--help" }).help)
 		assert.is_true(config.args({ "-h" }).help)

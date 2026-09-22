@@ -44,6 +44,7 @@ local function usage()
 
 	local bwords = #bw > 0 and table.concat(bw, " ") or "(none)"
 	local first = cfg.broadcast[1] or "all"
+	local logchan = cfg.log_channel ~= "" and cfg.log_channel or nil
 
 	io.stdout:write(([[
 irc-agent: chat on IRC as an agent. Every message is encrypted with a
@@ -85,6 +86,8 @@ RULES (the channel is shared by many agents and read by humans):
     everyone. Answer questions, once, briefly.
   - To ask one agent something, name it:  'mcc: is 875c73f installed?'
   - Long output belongs in a file or commit; send the path or hash.
+  - DMs are not private from the humans: every DM is copied to %s
+    for them to read.
   - Need context for a mention?  irc-agent read NICK 30 chan
 
 OTHER COMMANDS:
@@ -128,6 +131,7 @@ SETUP (once per machine; usually done already):
   server now:                 %s port %d, channels: %s
   owners (humans):            %s
   broadcast words:            %s   (config: owners, broadcast)
+  dm log channel:             %s   (config: log_channel)
 
 FLAGS (before the command; override the config file):
   -s HOST server   -p PORT port    -c #CHAN channel (repeatable)
@@ -140,10 +144,10 @@ FILES (what the commands use; you do not need these):
 
 Exit status 0 on success, 1 on any error (message on stderr).
   irc-agent run NICK          the daemon in the foreground (for debugging)
-]]):format(bwords, first, cfg.key_file, config.path(), cfg.server, cfg.port,
+]]):format(bwords, first, logchan or "(no log channel)", cfg.key_file, config.path(), cfg.server, cfg.port,
 	    table.concat(cfg.channels, " "),
 	    #cfg.owners > 0 and table.concat(cfg.owners, " ") or "(none)",
-	    bwords, cfg.dir))
+	    bwords, logchan or "(off)", cfg.dir))
 end
 
 if cfg.help then
@@ -386,6 +390,20 @@ local S = {
 for _, c in ipairs(cfg.channels) do
 	S.channels[irc.lower(c)] = { name = c, members = {}, joined = false }
 end
+
+local logchan = cfg.log_channel ~= "" and cfg.log_channel or nil
+
+if logchan and not irc.ischannel(logchan) then
+	die("log_channel " .. ("%q"):format(logchan) .. " is not a channel name")
+end
+if logchan and not S.channels[irc.lower(logchan)] then
+	S.channels[irc.lower(logchan)] = { name = logchan, members = {},
+	    joined = false, log = true }
+end
+
+local function islog(target)
+	return logchan ~= nil and irc.same(target, logchan)
+end
 for _, n in ipairs(cfg.watch or {}) do
 	S.watch[irc.lower(n)] = n
 end
@@ -408,8 +426,10 @@ local function writewho()
 	end
 
 	for _, c in pairs(S.channels) do
-		for _, n in pairs(c.members) do
-			add(n, c.name)
+		if not c.log then
+			for _, n in pairs(c.members) do
+				add(n, c.name)
+			end
 		end
 	end
 	for _, n in pairs(S.online) do
@@ -522,6 +542,12 @@ local function say(target, text)
 	end
 	for _, w in ipairs(wires) do
 		send(irc.privmsg(target, w))
+	end
+
+	-- the humans' copy of a DM: the sender logs it, so each DM is
+	-- logged once, from whichever host sent it
+	if logchan and not irc.ischannel(target) then
+		say(logchan, S.nick .. " -> " .. target .. ": " .. text)
 	end
 end
 
@@ -755,6 +781,11 @@ local function privmsg(m)
 		if isdm then
 			ctcp(m.nick, verb, arg)
 		end
+		return
+	end
+
+	-- the log is for humans; agents only write to it
+	if islog(target) then
 		return
 	end
 

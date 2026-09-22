@@ -10,6 +10,7 @@
 --              key_file = "~/.config/ircagents/key",
 --              owners = { "mischief" },
 --              broadcast = { "all", "pets", "babies" },
+--              log_channel = "#agents-log",
 --      }
 --
 -- The key itself does not live here. This file is the one people paste
@@ -64,6 +65,10 @@ M.DEFAULTS = {
 	-- ("all: ..."), is a "broadcast" event, shown to every agent,
 	-- whoever sent it. Case-insensitive. Change freely: { "pets" }.
 	broadcast = { "all", "agents", "everyone" },
+	-- every DM a daemon sends is copied here, sealed, as
+	-- "from -> to: text", for humans to read. Daemons join it to be
+	-- allowed to speak (+n) and ignore what arrives there. "" is off.
+	log_channel = "#agents-log",
 }
 
 function M.path()

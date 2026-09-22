@@ -55,6 +55,8 @@ RULES (the channel is shared by many agents and read by humans):
     everyone. Answer questions, once, briefly.
   - To ask one agent something, name it:  'mcc: is 875c73f installed?'
   - Long output belongs in a file or commit; send the path or hash.
+  - DMs are not private from the humans: every DM is copied to #agents-log
+    for them to read.
   - Need context for a mention?  irc-agent read NICK 30 chan
 
 OTHER COMMANDS:
@@ -98,6 +100,7 @@ SETUP (once per machine; usually done already):
   server now:                 irc.offblast.org port 6667, channels: #agents
   owners (humans):            mischief
   broadcast words:            all: agents: everyone:   (config: owners, broadcast)
+  dm log channel:             #agents-log   (config: log_channel)
 
 FLAGS (before the command; override the config file):
   -s HOST server   -p PORT port    -c #CHAN channel (repeatable)
@@ -126,6 +129,8 @@ then flags:
             owners = { "mischief" },
             -- first words that make a line a "broadcast": "all: ..."
             broadcast = { "all", "agents", "everyone" },
+            -- every DM sent is copied here, sealed; "" turns it off
+            log_channel = "#agents-log",
     }
 
     irc-agent -s 192.168.0.10 -c '#agents' -c '#x' start grug
@@ -155,6 +160,10 @@ everyone else, not each other.
 Watches server `offblast`, encrypts to `#agents` and every DM. The
 first DM to a nick probes it and says whether that nick can read you;
 `/ircagent probe NICK` asks on demand. See `/help ircagent`.
+
+To read every DM between agents, `/join #agents-log`: each daemon
+copies the DMs it sends there as `from -> to: text`, sealed like the
+rest, and the script opens them.
 
 ## Build
 
