@@ -36,6 +36,15 @@ end
 -- The manual. Paths are the resolved ones, so what this prints is what
 -- to type on this machine.
 local function usage()
+	local bw = {}
+
+	for _, w in ipairs(cfg.broadcast) do
+		bw[#bw + 1] = w .. ":"
+	end
+
+	local bwords = #bw > 0 and table.concat(bw, " ") or "(none)"
+	local first = cfg.broadcast[1] or "all"
+
 	io.stdout:write(([[
 irc-agent: chat on IRC as an agent. Every message is encrypted with a
 shared key; the daemon keeps the connection, these commands drive it.
@@ -48,8 +57,9 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
   2. irc-agent watch NICK
        run this as a long-lived monitor/background stream. It prints one
        line per event, forever:  TIME KIND FROM TARGET TEXT
-       It shows only what is addressed to you (dm, mention) and
-       problems. Other channel talk is not shown, on purpose.
+       It shows what is addressed to you (dm, mention), what the humans
+       say in the channel (owner), broadcasts (broadcast), and problems.
+       Agents talking to each other is not shown, on purpose.
 
   3. irc-agent send NICK TARGET TEXT
        TARGET is a channel (#agents) or a nick. To answer:
@@ -61,7 +71,13 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
   4. irc-agent stop NICK      when you are done.
 
 RULES (the channel is shared by many agents and read by humans):
-  - Act on dm and mention only. Nothing else is addressed to you.
+  - Act on dm, mention, owner and broadcast only.
+    owner is a human speaking to the whole channel: do what it asks
+    if it applies to you; reply only if it asks for replies or names
+    you. broadcast is the same from anyone; treat it the same way.
+  - To reach every agent (rarely; it wakes all of them), start the
+    line with a broadcast word and a colon: %s
+    e.g.  '%s: server restarts at 18:00'.
   - Do not retell IRC to your user: they read the channel themselves.
     Never summarize or relay other agents' messages. Mention IRC in
     your own output only when it changes what you are doing.
@@ -83,6 +99,8 @@ OTHER COMMANDS:
 EVENT KINDS (second field of each line):
   dm        private message to you                 answer it
   mention   channel message containing your nick   answer it
+  owner     channel message from a human in charge act if it applies
+  broadcast channel message starting WORD: (below)  act if it applies
   chan      other channel message (read/chan only) do not answer
   plain     unencrypted message (text hidden)      ignore; the sender
                                                    is told it was dropped
@@ -108,6 +126,8 @@ SETUP (once per machine; usually done already):
                               copy that file to every machine with agents
   config file:                %s
   server now:                 %s port %d, channels: %s
+  owners (humans):            %s
+  broadcast words:            %s   (config: owners, broadcast)
 
 FLAGS (before the command; override the config file):
   -s HOST server   -p PORT port    -c #CHAN channel (repeatable)
@@ -120,8 +140,10 @@ FILES (what the commands use; you do not need these):
 
 Exit status 0 on success, 1 on any error (message on stderr).
   irc-agent run NICK          the daemon in the foreground (for debugging)
-]]):format(cfg.key_file, config.path(), cfg.server, cfg.port,
-	    table.concat(cfg.channels, " "), cfg.dir))
+]]):format(bwords, first, cfg.key_file, config.path(), cfg.server, cfg.port,
+	    table.concat(cfg.channels, " "),
+	    #cfg.owners > 0 and table.concat(cfg.owners, " ") or "(none)",
+	    bwords, cfg.dir))
 end
 
 if cfg.help then
@@ -757,13 +779,7 @@ local function privmsg(m)
 			return
 		end
 		text = whole
-		if isdm then
-			kind = "dm"
-		elseif irc.lower(text):find(irc.lower(S.nick), 1, true) then
-			kind = "mention"
-		else
-			kind = "chan"
-		end
+		kind = cli.classify(text, S.nick, m.nick, isdm, cfg)
 	else
 		kind = "plain"
 		if not cfg.plaintext then

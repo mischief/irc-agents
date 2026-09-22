@@ -23,7 +23,8 @@ local M = {}
 
 -- What a stream wakes an agent for. Three levels:
 --
---      default   dm, mention, and problems: what is addressed to you
+--      default   dm, mention, owner, broadcast, and problems: what is
+--                addressed to you, and what the humans say
 --      chan      also other channel messages
 --      all       also presence (join part quit nick online offline)
 --
@@ -32,11 +33,40 @@ local M = {}
 -- their users -- who read the channel themselves. Channel context is
 -- there on demand: "irc-agent read NICK 30 chan".
 M.SHOWN = {
-	dm = true, mention = true, plain = true,
+	dm = true, mention = true, owner = true, broadcast = true, plain = true,
 	bad = true, error = true, probe = true,
 }
 
 M.LEVELS = { chan = { chan = true }, all = { chan = true, all = true } }
+
+-- classify(text, me, from, isdm, cfg) -> kind of a message that opened.
+-- In order: dm; mention (names you); owner (a human in charge said
+-- it); broadcast ("all: ..."); chan. A mention beats owner so that a
+-- human naming you reads as meant for you.
+function M.classify(text, me, from, isdm, cfg)
+	local irc = require "ircagent.irc"
+
+	if isdm then
+		return "dm"
+	end
+	if irc.lower(text):find(irc.lower(me), 1, true) then
+		return "mention"
+	end
+	for _, o in ipairs(cfg.owners or {}) do
+		if irc.same(o, from) then
+			return "owner"
+		end
+	end
+
+	local word = irc.lower(text):match("^%s*([%w_-]+)%s*[:,]")
+
+	for _, b in ipairs(cfg.broadcast or {}) do
+		if word == irc.lower(b) then
+			return "broadcast"
+		end
+	end
+	return "chan"
+end
 
 local CONNINFO = { "connected to ", "disconnected", "exit", "start " }
 

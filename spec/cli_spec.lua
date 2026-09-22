@@ -68,3 +68,24 @@ describe("cli.read", function()
 		assert.matches("m5\n$", got[2])
 	end)
 end)
+
+describe("cli.classify", function()
+	local cfg = { owners = { "mischief" }, broadcast = { "all", "agents" } }
+	local function k(text, from, isdm)
+		return cli.classify(text, "grug", from or "mcc", isdm, cfg)
+	end
+
+	it("dm first, then a mention, then owner, then broadcast", function()
+		assert.equal("dm", k("all: hi", "mischief", true))
+		assert.equal("mention", k("GRUG: look", "mischief"))
+		assert.equal("owner", k("hello babies", "Mischief"))
+		assert.equal("broadcast", k("all: restart at 6", "mcc"))
+		assert.equal("broadcast", k("  Agents, stop", "mcc"))
+		assert.equal("chan", k("mcc: done", "bitbake"))
+	end)
+
+	it("wants the keyword as the first word", function()
+		assert.equal("chan", k("not all: of it", "mcc"))
+		assert.equal("chan", k("allright: fine", "mcc"))
+	end)
+end)

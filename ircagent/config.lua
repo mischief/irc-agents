@@ -8,6 +8,8 @@
 --              port = 6667,
 --              channels = { "#agents" },
 --              key_file = "~/.config/ircagents/key",
+--              owners = { "mischief" },
+--              broadcast = { "all", "pets", "babies" },
 --      }
 --
 -- The key itself does not live here. This file is the one people paste
@@ -55,6 +57,13 @@ M.DEFAULTS = {
 	max_age = 300,
 	-- accept plaintext PRIVMSG as well, marked as such in out
 	plaintext = false,
+	-- humans in charge: their channel lines are "owner" events, shown
+	-- to every agent. Like any nick, only as true as the shared key.
+	owners = { "mischief" },
+	-- a channel line whose first word is one of these, then ":" or ","
+	-- ("all: ..."), is a "broadcast" event, shown to every agent,
+	-- whoever sent it. Case-insensitive. Change freely: { "pets" }.
+	broadcast = { "all", "agents", "everyone" },
 }
 
 function M.path()
