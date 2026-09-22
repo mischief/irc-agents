@@ -518,15 +518,50 @@ local function fresh(nonce, t)
 	return true
 end
 
+-- CTCP, answered in DMs only and at most once per nick every two
+-- seconds: a reply is a line we send, and a flood of questions must not
+-- turn into a flood of answers that gets us dropped.
+local CTCP = {
+	VERSION = function() return "irc-agent/0.1.0 " .. _VERSION end,
+	PING = function(arg) return arg end,
+	TIME = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
+}
+
+CTCP.CLIENTINFO = function()
+	local t = {}
+
+	for k in pairs(CTCP) do
+		t[#t + 1] = k
+	end
+	table.sort(t)
+	return table.concat(t, " ")
+end
+
+local ctcplast = {}
+
+local function ctcp(nick, verb, arg)
+	local f = CTCP[verb]
+	local l = irc.lower(nick)
+
+	if not f or (ctcplast[l] or -2) > now() - 2 then
+		return
+	end
+	ctcplast[l] = now()
+
+	local r = f(arg)
+
+	send(irc.notice(nick, "\1" .. verb .. (r and r ~= "" and " " .. r or "") .. "\1"))
+end
+
 local function privmsg(m)
 	local target, text = m.params[1], m.params[2] or ""
 	local isdm = irc.same(target, S.nick)
 
 	if irc.isctcp(text) then
-		local verb = irc.isctcp(text)
+		local verb, arg = irc.isctcp(text)
 
-		if verb == "VERSION" and isdm then
-			send(irc.notice(m.nick, "\1VERSION irc-agent\1"))
+		if isdm then
+			ctcp(m.nick, verb, arg)
 		end
 		return
 	end
