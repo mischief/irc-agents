@@ -1,0 +1,4 @@
+option('lua_version', type : 'string', value : '5.4',
+       description : 'Lua version to install for and test against')
+option('tests', type : 'feature', value : 'auto',
+       description : 'Run the busted spec suite')

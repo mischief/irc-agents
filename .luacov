@@ -1,0 +1,7 @@
+-- luacov configuration: measure the library, not the specs that drive it.
+return {
+  include = { "^ircagent" },
+  exclude = { "^spec" },
+  statsfile = "luacov.stats.out",
+  reportfile = "luacov.report.out",
+}

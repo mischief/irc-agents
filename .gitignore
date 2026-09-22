@@ -1,0 +1,4 @@
+build*/
+luacov.stats.out
+luacov.report.out
+.*.sw[po]
