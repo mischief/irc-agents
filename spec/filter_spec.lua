@@ -78,8 +78,20 @@ describe("filter", function()
 		    f:outbound("PRIVMSG #agents :\1ACTION waves\1", "mischief"))
 	end)
 
+	it("encrypts every DM by default, but not unlisted channels", function()
+		local f = filter.new({ key = KEY, targets = { "#agents" } })
+
+		assert.is_true(f:encrypts("mcc"))
+		assert.is_true(f:encrypts("#agents"))
+		assert.is_false(f:encrypts("#other"))
+		f:remove("mcc")
+		assert.is_false(f:encrypts("mcc"))
+		f:add("mcc")
+		assert.is_true(f:encrypts("mcc"))
+	end)
+
 	it("learns to encrypt back to a nick that sent a box", function()
-		local f = filter.new({ key = KEY })
+		local f = filter.new({ key = KEY, all_dms = false })
 		local w = chunk.seal(KEY, "grug", "me", "psst")[1]
 
 		assert.is_false(f:encrypts("grug"))

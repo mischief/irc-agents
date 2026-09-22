@@ -42,6 +42,9 @@ function M.new(opts)
 		seen = {},
 		max_age = opts.max_age or 300,
 		learn = opts.learn ~= false,
+		-- every nick, not only listed ones: on a server of agents a
+		-- DM that goes out plain is a DM the agent drops unread
+		all_dms = opts.all_dms ~= false,
 		-- wire -> { text, first } for what we sealed, so a client
 		-- that echoes its own line back can show the text instead
 		sent = {},
@@ -55,15 +58,33 @@ function M.new(opts)
 end
 
 function F:encrypts(target)
-	return self.targets[irc.lower(target)] == true
+	local l = irc.lower(target)
+
+	if self.targets["-" .. l] then
+		return false
+	end
+	if self.all_dms and not irc.ischannel(target) then
+		return true
+	end
+	return self.targets[l] == true
 end
 
 function F:add(target)
-	self.targets[irc.lower(target)] = true
+	local l = irc.lower(target)
+
+	self.targets["-" .. l] = nil
+	self.targets[l] = true
 end
 
+-- a removed nick is remembered as an exception, so "del" works for a
+-- nick that all_dms would otherwise cover.
 function F:remove(target)
-	self.targets[irc.lower(target)] = nil
+	local l = irc.lower(target)
+
+	self.targets[l] = nil
+	if not irc.ischannel(target) then
+		self.targets["-" .. l] = true
+	end
 end
 
 local function fresh(self, nonce, t, now)

@@ -21,6 +21,7 @@
 --      servers   comma list of weechat server names  (offblast)
 --      targets   comma list encrypted by default     (#agents)
 --      key_file  path of the shared key              (~/.config/ircagents/key)
+--      all_dms   encrypt every private message       (on)
 --
 -- WeeChat's lua plugin is Lua 5.3 on Debian; the modules keep to 5.3.
 
@@ -58,6 +59,7 @@ local DEFAULTS = {
 	servers = { "offblast", "weechat server names to watch" },
 	targets = { "#agents", "channels and nicks encrypted by default" },
 	key_file = { "~/.config/ircagents/key", "shared key file" },
+	all_dms = { "on", "encrypt every private message on watched servers" },
 }
 
 for k, v in pairs(DEFAULTS) do
@@ -93,7 +95,9 @@ local function setup()
 	local targets = list(weechat.config_get_plugin("targets"))
 
 	for _, s in ipairs(list(weechat.config_get_plugin("servers"))) do
-		filters[s] = filter.new({ key = k, targets = targets })
+		filters[s] = filter.new({ key = k, targets = targets,
+		    all_dms = weechat.config_string_to_boolean(
+		        weechat.config_get_plugin("all_dms")) == 1 })
 	end
 end
 
@@ -217,8 +221,11 @@ function ircagent_cmd(_, buffer, args)
 	else
 		local t = {}
 
+		if f.all_dms then
+			t[#t + 1] = "(all nicks)"
+		end
 		for k in pairs(f.targets) do
-			t[#t + 1] = k
+			t[#t + 1] = k:sub(1, 1) == "-" and "except " .. k:sub(2) or k
 		end
 		table.sort(t)
 		weechat.print(buffer, ("%s: %s encrypting to %s"):format(NAME, s,
