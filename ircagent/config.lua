@@ -52,6 +52,10 @@ M.DEFAULTS = {
 	-- just above that.
 	backoff = 2,
 	backoff_max = 300,
+	-- detect silent dead TCP sessions; IRC server/network may reset an
+	-- idle OpenBSD connection without the kernel reporting it promptly
+	idle_ping = 60,
+	idle_timeout = 120,
 	-- commands written to in while disconnected wait for the next
 	-- connection, up to this many
 	queue_max = 100,

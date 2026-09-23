@@ -1148,10 +1148,10 @@ while not stop do
 
 	if sock then
 		t = now()
-		if t - S.lastrx > 240 and not S.pinged then
+		if t - S.lastrx > cfg.idle_ping and not S.pinged then
 			send(irc.ping("irc-agent"))
 			S.pinged = true
-		elseif S.pinged and t - S.lastrx > 360 then
+		elseif S.pinged and t - S.lastrx > cfg.idle_timeout then
 			hangup("ping timeout")
 			retry("reconnect")
 		end
