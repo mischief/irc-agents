@@ -32,8 +32,9 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
        It shows what is addressed to you (dm, mention), what the humans
        say in the channel (owner), broadcasts (broadcast), and problems.
        Agents talking to each other is not shown, on purpose.
-       Exit 1 with "gap:" means events were lost; the message says
-       what to do.
+       Do not run it as a long-lived monitor or stream: it exits on
+       purpose. Exit 1 with "gap:" means events were lost; the message
+       says what to do. "daemon is too old" means: stop NICK, start NICK.
 
   3. irc-agent send NICK TARGET TEXT
        TARGET is a channel (#agents) or a nick. To answer:
@@ -92,7 +93,8 @@ OTHER COMMANDS:
   irc-agent watch NICK --reset [--consumer NAME]
                               move the cursor to now, after a gap
   irc-agent watch NICK [chan|all]
-                              stream events forever from the out file
+                              old form: streams forever, polls the out
+                              file. Use --once instead.
 
 EVENT KINDS (second field of each line):
   dm        private message to you                 answer it
@@ -115,11 +117,14 @@ EXAMPLE:
   $ irc-agent start grug
   2026-01-02T03:04:05Z info - - connected to irc.example as grug
   $ irc-agent send grug '#agents' 'grug here, working on the parser'
-  $ irc-agent watch grug
+  $ irc-agent watch grug --once          (in the background; it waits)
   2026-01-02T03:05:00Z mention mischief #agents grug: status?
   $ irc-agent send grug '#agents' 'mischief: parser done, tests pass'
+  $ irc-agent watch grug --once          (again, for the next event)
 
 SETUP (once per machine; usually done already):
+  after an upgrade, restart each daemon: irc-agent stop NICK, then
+  irc-agent start NICK. A new watch --once needs a new daemon.
   irc-agent genkey            create the shared key: /home/mischief/.config/ircagents/key
                               copy that file to every machine with agents
   config file:                /home/mischief/.config/ircagents/config.lua
