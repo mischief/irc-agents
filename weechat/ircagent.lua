@@ -88,24 +88,31 @@ end
 
 local filters = {}   -- server -> filter
 local probers = {}   -- server -> probe
+local protected = {} -- server -> { target = true, all_dms = bool }
 local key
 
 local function setup()
 	local path = weechat.config_get_plugin("key_file"):gsub("^~/", home .. "/")
 	local k, kerr = box.loadkey(path)
 
-	filters, probers, key = {}, {}, k
-	if not k then
-		return err(kerr)
-	end
+	filters, probers, protected, key = {}, {}, {}, k
 
 	local targets = list(weechat.config_get_plugin("targets"))
+	local all_dms = weechat.config_string_to_boolean(
+	    weechat.config_get_plugin("all_dms")) == 1
 
 	for _, s in ipairs(list(weechat.config_get_plugin("servers"))) do
-		probers[s] = probe.new(k)
+		local pt = { all_dms = all_dms }
+		for _, t in ipairs(targets) do pt[irc.lower(t)] = true end
+		protected[s] = pt
+		probers[s] = k and probe.new(k) or nil
+		if not k then goto next_server end
 		filters[s] = filter.new({ key = k, targets = targets,
-		    all_dms = weechat.config_string_to_boolean(
-		        weechat.config_get_plugin("all_dms")) == 1 })
+		    all_dms = all_dms })
+		::next_server::
+	end
+	if not k then
+		err(kerr)
 	end
 end
 
@@ -146,6 +153,15 @@ function ircagent_out(_, _, server, line)
 	local f = filters[server]
 
 	if not f then
+		local target = line:match("^PRIVMSG (%S+) ")
+		local pt = protected[server]
+		local guarded = pt and target and
+		    (pt[irc.lower(target)] or (pt.all_dms and not irc.ischannel(target)))
+
+		if guarded then
+			err("not sent: encryption key unavailable; plaintext dropped")
+			return ""
+		end
 		return line
 	end
 
