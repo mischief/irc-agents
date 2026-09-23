@@ -26,6 +26,7 @@ supported_platforms = { 'unix' }
 dependencies = {
   'lua >= 5.3',
   'luaposix',
+  'imsg >= 0.2',
 }
 
 build = {
@@ -42,7 +43,11 @@ build = {
     ['ircagent.crypto.util'] = 'ircagent/crypto/util.lua',
     ['ircagent.filter'] = 'ircagent/filter.lua',
     ['ircagent.irc'] = 'ircagent/irc.lua',
+    ['ircagent.journal'] = 'ircagent/journal.lua',
     ['ircagent.probe'] = 'ircagent/probe.lua',
+    ['ircagent.rpc'] = 'ircagent/rpc.lua',
+    ['ircagent.rpcc'] = 'ircagent/rpcc.lua',
+    ['ircagent.rpcd'] = 'ircagent/rpcd.lua',
   },
   install = {
     bin = {

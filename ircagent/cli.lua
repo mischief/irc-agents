@@ -4,6 +4,7 @@
 --      start NICK             fork the daemon, wait for it to connect
 --      send NICK TARGET TEXT  one message ("-" for TEXT reads stdin)
 --      watch NICK [chan|all]  follow events, one per line, forever
+--      watch NICK --once      one event over rpc (rpcc.lua), then exit
 --      read NICK [N] [chan|all]  the last N events (default 20), then exit
 --      status NICK            running? connected? who is around
 --      stop NICK              quit and wait for exit
@@ -73,25 +74,14 @@ end
 
 local CONNINFO = { "connected to ", "disconnected", "exit", "start " }
 
--- shown(line, level) with level nil, "chan" or "all"
-function M.shown(line, level)
+-- showkind(kind, text, level) with level nil, "default", "chan" or "all"
+function M.showkind(kind, text, level)
 	local lv = M.LEVELS[level] or {}
 
-	if lv.all then
-		return true
-	end
-
-	local kind, rest = line:match("^%S+ (%S+) (.*)$")
-
-	if not kind then
-		return false
-	end
-	if M.SHOWN[kind] or (kind == "chan" and lv.chan) then
+	if lv.all or M.SHOWN[kind] or (kind == "chan" and lv.chan) then
 		return true
 	end
 	if kind == "info" then
-		local text = rest:match("^%S+ %S+ (.*)$") or ""
-
 		for _, p in ipairs(CONNINFO) do
 			if text:sub(1, #p) == p then
 				return true
@@ -99,6 +89,16 @@ function M.shown(line, level)
 		end
 	end
 	return false
+end
+
+-- shown(line, level): showkind for a line of out
+function M.shown(line, level)
+	local kind, rest = line:match("^%S+ (%S+) (.*)$")
+
+	if not kind then
+		return false
+	end
+	return M.showkind(kind, rest:match("^%S+ %S+ (.*)$") or "", level)
 end
 
 local function paths(cfg, nick)

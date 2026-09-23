@@ -12,6 +12,8 @@ local config = require "ircagent.config"
 local chunk = require "ircagent.chunk"
 local cli = require "ircagent.cli"
 local probe = require "ircagent.probe"
+local rpc = require "ircagent.rpc"
+local journal = require "ircagent.journal"
 
 local socket = require "posix.sys.socket"
 local poll = require "posix.poll"
@@ -57,12 +59,16 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
   1. irc-agent start NICK
        connects in the background, returns when connected.
 
-  2. irc-agent watch NICK
-       run this as a long-lived monitor/background stream. It prints one
-       line per event, forever:  TIME KIND FROM TARGET TEXT
+  2. irc-agent watch NICK --once
+       run this as a background command. It waits for one event, prints
+       it as one line:  TIME KIND FROM TARGET TEXT
+       then exits. Run it again after each exit. A cursor file keeps
+       your place, so no event is lost between runs.
        It shows what is addressed to you (dm, mention), what the humans
        say in the channel (owner), broadcasts (broadcast), and problems.
        Agents talking to each other is not shown, on purpose.
+       Exit 1 with "gap:" means events were lost; the message says
+       what to do.
 
   3. irc-agent send NICK TARGET TEXT
        TARGET is a channel (#agents) or a nick. To answer:
@@ -113,8 +119,15 @@ OTHER COMMANDS:
                               sealed paste, URL sent to TARGET (RULES)
   irc-agent paste put FILE|-  sealed paste, prints the URL
   irc-agent paste get URL [FILE]  read a sealed paste
-  irc-agent watch NICK chan   stream channel messages too (noisy; avoid)
-  irc-agent watch NICK all    everything, including joins and parts
+  irc-agent watch NICK --once --level chan|all
+                              also channel messages (noisy; avoid), or
+                              everything, including joins and parts
+  irc-agent watch NICK --once --consumer NAME
+                              a cursor of its own, e.g. one per session
+  irc-agent watch NICK --reset [--consumer NAME]
+                              move the cursor to now, after a gap
+  irc-agent watch NICK [chan|all]
+                              stream events forever from the out file
 
 EVENT KINDS (second field of each line):
   dm        private message to you                 answer it
@@ -156,8 +169,9 @@ FLAGS (before the command; override the config file):
   -a SECS max message age   -P show plaintext   -h, --help this text
 
 FILES (what the commands use; you do not need these):
-  %s/NICK/{in,out,who,pid}
+  %s/NICK/{in,out,who,pid,rpc,events,watch/}
   in: command fifo   out: event log   who: presence   pid: daemon pid
+  rpc: event socket  events: event journal  watch/: cursors of --once
 
 Exit status 0 on success, 1 on any error (message on stderr).
   irc-agent run NICK          the daemon in the foreground (for debugging)
@@ -239,12 +253,42 @@ if sub == "send" then
 	end
 	finish(cli.command(cfg, n, "msg " .. target .. " " .. text))
 elseif sub == "watch" then
-	local lv = pos[3]
+	local n = checknick(pos[2])
+	local o = {}
+	local i = 3
+	local WU = "usage: irc-agent watch NICK [chan|all]\n" ..
+	    "       irc-agent watch NICK --once [--consumer NAME] [--level chan|all]\n" ..
+	    "       irc-agent watch NICK --reset [--consumer NAME]"
 
-	if lv and not cli.LEVELS[lv] then
-		die("watch: level is chan or all, not " .. lv)
+	while pos[i] do
+		local a = pos[i]
+
+		if a == "--once" or a == "--reset" then
+			o[a:sub(3)] = true
+		elseif a == "--consumer" or a == "--level" then
+			o[a:sub(3)] = pos[i + 1] or die(a .. " wants a value\n  " .. WU)
+			i = i + 1
+		elseif cli.LEVELS[a] and not o.level then
+			o.level = a
+		else
+			die("watch: unexpected " .. a .. "\n  " .. WU)
+		end
+		i = i + 1
 	end
-	finish(cli.watch(cfg, checknick(pos[2]), lv))
+	if o.level and not rpc.LEVELS[o.level] then
+		die("watch: level is chan or all, not " .. o.level)
+	end
+	if o.consumer and not o.consumer:match("^[%w_.-]+$") then
+		die("watch: consumer is letters, digits, _ . -")
+	end
+	if o.consumer and not (o.once or o.reset) then
+		die("watch: --consumer goes with --once or --reset\n  " .. WU)
+	end
+	if o.once or o.reset then
+		o.pid = function() return cli.pid(cfg, n) end
+		finish(require("ircagent.rpcc").once(cfg, n, o))
+	end
+	finish(cli.watch(cfg, n, o.level))
 elseif sub == "read" then
 	local n = checknick(pos[2])
 	local count, all = 20, nil
@@ -421,14 +465,50 @@ else
 	now = os.time
 end
 
-local function esc(s)
-	return (tostring(s):gsub("\\", "\\\\"):gsub("\n", "\\n")
-	    :gsub("[%z\1-\31\127]", ""))
+-- ---- events ----
+
+local function showkind(ev, level)
+	return cli.showkind(ev.kind, ev.text, level)
 end
 
+local levels = {}
+
+for lv in pairs(rpc.LEVELS) do
+	levels[lv] = function(ev) return showkind(ev, lv) end
+end
+
+local jok, jnl = pcall(journal.open, dir, { levels = levels })
+
+if not jok then
+	die("journal in " .. dir .. ": " .. tostring(jnl))
+end
+
+local srv, srverr = require("ircagent.rpcd").new {
+	path = dir .. "/rpc", nick = want, journal = jnl, want = showkind,
+}
+local jfailed
+
+-- journal first, then out, then waiting clients
 local function emit(kind, from, target, text)
-	out:write(("%s %s %s %s %s\n"):format(os.date("!%Y-%m-%dT%H:%M:%SZ"),
-	    kind, from or "-", target or "-", esc(text or "")))
+	local ev = { kind = kind, from = from or "-", target = target or "-",
+	    text = tostring(text or ""), time = os.time() }
+	local seq, err = jnl:append(ev)
+
+	out:write(rpc.format(ev), "\n")
+	if not seq and not jfailed then
+		jfailed = true
+		emit("error", "-", "-", err)
+	end
+	if srv then
+		srv:notify()
+	end
+end
+
+if jnl.reset then
+	emit("error", "-", "-", jnl.reset)
+end
+if not srv then
+	emit("error", "-", "-", "rpc: " .. tostring(srverr))
 end
 
 -- ---- state ----
@@ -1095,6 +1175,9 @@ while not stop do
 	if sock then
 		fds[sock] = { events = { IN = true } }
 	end
+	if srv then
+		srv:pollfds(fds)
+	end
 
 	local r = poll.poll(fds, sock and #sendq >= sendqi and 250 or 1000)
 
@@ -1104,6 +1187,14 @@ while not stop do
 
 			if not rok then
 				emit("error", "-", "-", "command: " .. tostring(rerr))
+			end
+		end
+
+		if srv then
+			local sok, serr = pcall(srv.service, srv, fds)
+
+			if not sok then
+				emit("error", "-", "-", "rpc: " .. tostring(serr))
 			end
 		end
 
@@ -1175,3 +1266,21 @@ if sock and not quitting then
 end
 os.remove(pidpath)
 emit("info", "-", "-", "exit")
+if srv then
+	-- let a waiting client read "exit" before the socket goes
+	for _ = 1, 20 do
+		local fds, busy = {}, false
+
+		srv:pollfds(fds)
+		for _, f in pairs(fds) do
+			busy = busy or f.events.OUT
+		end
+		if not busy then
+			break
+		end
+		poll.poll(fds, 50)
+		srv:service(fds)
+	end
+	srv:close()
+end
+jnl:close()
