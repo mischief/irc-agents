@@ -63,8 +63,8 @@ M.DEFAULTS = {
 	max_age = 300,
 	-- accept plaintext PRIVMSG as well, marked as such in out
 	plaintext = false,
-	-- humans in charge: their channel lines are "owner" events, shown
-	-- to every agent. Like any nick, only as true as the shared key.
+	-- humans in charge: their mentions and broadcasts are "owner"
+	-- events. Like any nick, only as true as the shared key.
 	owners = { "mischief" },
 	-- a channel line whose first word is one of these, then ":" or ","
 	-- ("all: ..."), is a "broadcast" event, shown to every agent,

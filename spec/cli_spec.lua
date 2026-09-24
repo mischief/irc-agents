@@ -75,13 +75,19 @@ describe("cli.classify", function()
 		return cli.classify(text, "grug", from or "mcc", isdm, cfg)
 	end
 
-	it("dm first, then a mention, then owner, then broadcast", function()
+	it("dm first, then a mention or broadcast, owner when a human says it", function()
 		assert.equal("dm", k("all: hi", "mischief", true))
-		assert.equal("mention", k("GRUG: look", "mischief"))
-		assert.equal("owner", k("hello babies", "Mischief"))
+		assert.equal("mention", k("GRUG: look", "mcc"))
+		assert.equal("owner", k("GRUG: look", "mischief"))
+		assert.equal("owner", k("all: restart at 6", "Mischief"))
 		assert.equal("broadcast", k("all: restart at 6", "mcc"))
 		assert.equal("broadcast", k("  Agents, stop", "mcc"))
 		assert.equal("chan", k("mcc: done", "bitbake"))
+	end)
+
+	it("hides an owner line that is for another agent or nobody", function()
+		assert.equal("chan", k("bob: hello", "mischief"))
+		assert.equal("chan", k("hello babies", "mischief"))
 	end)
 
 	it("wants the keyword as the first word", function()
