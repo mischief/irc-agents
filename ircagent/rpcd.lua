@@ -28,7 +28,9 @@ local function nonblock(fd)
 	return fcntl.fcntl(fd, fcntl.F_SETFL, fl | fcntl.O_NONBLOCK)
 end
 
--- new{ path, nick, journal, want = function(ev, level) }
+-- new{ path, nick, journal, want = function(ev, level),
+--     control = function(req, done) }. control answers later with
+-- done(nil, text) or done(error code, text); without it, control is off.
 function M.new(o)
 	os.remove(o.path)
 
@@ -44,6 +46,7 @@ function M.new(o)
 	nonblock(fd)
 	return setmetatable({
 		path = o.path, nick = o.nick, j = o.journal, want = o.want,
+		control = o.control,
 		fd = fd, clients = {},
 	}, S)
 end
@@ -141,7 +144,25 @@ local function handle(self, c, m)
 		return
 	end
 	if typ == rpc.T.CONTROL then
-		return fail(self, c, id, rpc.E.DISABLED, 0, "control is disabled")
+		local req = rpc.uncontrol(p.body)
+
+		if not req then
+			return fail(self, c, id, rpc.E.MALFORMED, 0, "bad control")
+		end
+		if not self.control then
+			return fail(self, c, id, rpc.E.DISABLED, 0, "control is disabled")
+		end
+		return self.control(req, function(code, text)
+			-- the client can go away while the request is out
+			if self.clients[c.fd] ~= c then
+				return
+			end
+			if code then
+				return fail(self, c, id, code, 0, text)
+			end
+			send(self, c, rpc.T.CONTROL_R, id,
+			    rpc.header(rpc.OP[rpc.T.CONTROL_R], 0, text))
+		end)
 	end
 	return fail(self, c, id, rpc.E.MALFORMED, 0, "unexpected type " .. typ)
 end

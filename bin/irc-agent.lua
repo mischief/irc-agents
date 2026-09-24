@@ -77,6 +77,8 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
          mention in #chan  ->  irc-agent send NICK '#chan' 'reply'
        Quote the text. Long and multi-line text is fine (up to ~16 KB);
        use - as TEXT to read it from stdin.
+       It returns when the server has taken the message. Exit 1 says
+       why not: the nick is not in the channel, or no connection.
 
   4. irc-agent stop NICK      when you are done.
 
@@ -256,7 +258,9 @@ if sub == "send" then
 	if text == "" then
 		die("missing TEXT\n  usage: irc-agent send NICK TARGET TEXT")
 	end
-	finish(cli.command(cfg, n, "msg " .. target .. " " .. text))
+	-- a typed \n is a newline
+	finish(require("ircagent.rpcc").send(cfg, n, target, (text:gsub("\\n", "\n")),
+	    function() return cli.pid(cfg, n) end))
 elseif sub == "watch" then
 	local n = checknick(pos[2])
 	local o = {}
@@ -488,8 +492,11 @@ if not jok then
 	die("journal in " .. dir .. ": " .. tostring(jnl))
 end
 
+local control
+
 local srv, srverr = require("ircagent.rpcd").new {
 	path = dir .. "/rpc", nick = want, journal = jnl, want = showkind,
+	control = function(req, done) return control(req, done) end,
 }
 local jfailed
 
@@ -601,6 +608,8 @@ local sock
 local rd = irc.reader()
 local sendq, sendqi = {}, 1
 local credit, lastcredit = 5, now()
+-- rpc sends waiting for the PONG after their lines: token -> send
+local sends = {}
 
 local function send(line)
 	sendq[#sendq + 1] = line
@@ -663,6 +672,10 @@ local function hangup(why)
 	sock = nil
 	S.registered = false
 	sendq, sendqi = {}, 1
+	for tok, p in pairs(sends) do
+		sends[tok] = nil
+		p.done(rpc.E.UNSENT, "disconnected before the server answered: " .. why)
+	end
 	for _, c in pairs(S.channels) do
 		c.members, c.joined = {}, false
 	end
@@ -676,22 +689,117 @@ end
 local asm = chunk.assembler()
 local prober = probe.new(key)
 
--- split, number, seal: see ircagent/chunk.lua.
-local function say(target, text)
+-- split, number, seal: see ircagent/chunk.lua. Returns the number of
+-- lines queued, or nil and an error.
+local function wire(target, text)
 	local ok, wires = pcall(chunk.seal, key, S.nick, target, text)
 
 	if not ok then
-		return emit("error", "-", target, wires)
+		return nil, wires
 	end
 	for _, w in ipairs(wires) do
 		send(irc.privmsg(target, w))
 	end
+	return #wires
+end
 
-	-- the humans' copy of a DM: the sender logs it, so each DM is
-	-- logged once, from whichever host sent it
+-- the humans' copy of a DM: the sender logs it, so each DM is
+-- logged once, from whichever host sent it
+local function logdm(target, text)
 	if logchan and not irc.ischannel(target) then
-		say(logchan, S.nick .. " -> " .. target .. ": " .. text)
+		wire(logchan, S.nick .. " -> " .. target .. ": " .. text)
 	end
+end
+
+local function say(target, text)
+	local n, err = wire(target, text)
+
+	if not n then
+		return emit("error", "-", target, err)
+	end
+	logdm(target, text)
+end
+
+-- a nick is known when it shares a channel with us or MONITOR says
+-- it is online; a channel when we are in it
+local function known(target)
+	local l = irc.lower(target)
+
+	if irc.ischannel(target) then
+		return S.channels[l] and S.channels[l].joined
+	end
+	if S.online[l] then
+		return true
+	end
+	for _, ch in pairs(S.channels) do
+		if ch.members[l] then
+			return true
+		end
+	end
+	return false
+end
+
+local sendtok = 0
+
+-- rpc send: queue the lines, then a PING. The server answers in order,
+-- so its PONG means every line went through, unless a 401 came first.
+function control(req, done)
+	if req.cmd ~= "send" then
+		return done(rpc.E.DISABLED, "unknown control request: " .. req.cmd)
+	end
+	if not (sock and S.registered) then
+		return done(rpc.E.UNSENT, "not connected to " .. cfg.server)
+	end
+	if not known(req.target) then
+		if irc.ischannel(req.target) then
+			return done(rpc.E.NOSUCH, "not in " .. req.target)
+		end
+		return done(rpc.E.NOSUCH, req.target .. " is not in " ..
+		    table.concat(cfg.channels, " ") .. "; see irc-agent status " .. want)
+	end
+
+	local n, err = wire(req.target, req.text)
+
+	if not n then
+		return done(rpc.E.UNSENT, err)
+	end
+	sendtok = sendtok + 1
+
+	local tok = "send" .. sendtok
+
+	send(irc.ping(tok))
+	sends[tok] = { target = req.target, text = req.text, done = done,
+	    deadline = now() + cfg.send_wait + (#sendq - sendqi + 1) }
+end
+
+-- a 401, 403 or 404 about a target with a send out fails that send
+local function refused(m)
+	local target, why = m.params[2] or "", m.params[3] or m.cmd
+	local hit = false
+
+	for _, p in pairs(sends) do
+		if irc.same(p.target, target) then
+			p.err = target .. ": " .. why
+			hit = true
+		end
+	end
+	if not hit then
+		emit("error", m.nick, "-", table.concat(m.params, " ", 2))
+	end
+end
+
+local function answered(tok)
+	local p = sends[tok]
+
+	if not p then
+		return
+	end
+	sends[tok] = nil
+	if p.err then
+		return p.done(rpc.E.NOSUCH, p.err)
+	end
+	logdm(p.target, p.text)
+	p.done(nil, "sent")
 end
 
 local function refreshwho(target)
@@ -996,6 +1104,10 @@ numeric["001"] = function(m)
 end
 
 -- nick in use: take the next one that fits in nine.
+numeric["401"] = refused
+numeric["403"] = refused
+numeric["404"] = refused
+
 numeric["433"] = function()
 	if S.registered then
 		return emit("error", "-", "-", "nick in use")
@@ -1055,6 +1167,8 @@ local function handle(m)
 
 	if c == "PING" then
 		send(irc.pong(m.params[1] or ""))
+	elseif c == "PONG" then
+		answered(m.params[2] or m.params[1] or "")
 	elseif c == "NOTICE" and m.nick and irc.same(m.params[1], S.nick) then
 		local verb, arg = irc.isctcp(m.params[2] or "")
 
@@ -1236,6 +1350,13 @@ while not stop do
 
 	for _, g in ipairs(prober:expire(now())) do
 		emit("probe", g.nick, S.nick, g.result)
+	end
+
+	for tok, p in pairs(sends) do
+		if now() > p.deadline then
+			sends[tok] = nil
+			p.done(rpc.E.UNSENT, "no answer from the server")
+		end
 	end
 
 	for _, g in ipairs(asm:expire(now())) do

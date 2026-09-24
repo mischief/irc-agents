@@ -14,7 +14,7 @@ M.T = {
 	NEXT = 1,       -- client: next event after sequence
 	EVENT = 2,      -- daemon: one event
 	ACK = 3,        -- client: event at sequence printed and saved
-	CONTROL = 4,    -- client: control request (disabled)
+	CONTROL = 4,    -- client: control request (send)
 	CONTROL_R = 5,  -- daemon: control response
 	ERROR = 6,      -- daemon: error, opcode is the code
 	HELLO = 7,      -- both: version, nick, cursor, level; journal range
@@ -34,6 +34,8 @@ M.E = {
 	STATE = 5,      -- request out of order, such as NEXT before HELLO
 	NICK = 6,       -- hello names another nick
 	JOURNAL = 7,    -- the daemon cannot write its journal
+	NOSUCH = 8,     -- send: no such nick or channel
+	UNSENT = 9,     -- send: not connected, or the server did not answer
 }
 
 M.ENAME = {}
@@ -185,6 +187,26 @@ function M.unnext(body)
 		return nil
 	end
 	return t[1]
+end
+
+-- ---- control ----
+--
+-- client: body = command, target, text; the only command is "send"
+-- daemon: CONTROL_R with body "sent", or ERROR
+
+local CONTROL = ">s1s1s4"
+
+function M.control(cmd, target, text)
+	return CONTROL:pack(cmd, target, text)
+end
+
+function M.uncontrol(body)
+	local t = unpackall(CONTROL, body)
+
+	if not t or t[1] == "" or t[2] == "" then
+		return nil
+	end
+	return { cmd = t[1], target = t[2], text = t[3] }
 end
 
 return M

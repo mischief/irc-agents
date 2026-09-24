@@ -257,4 +257,44 @@ function M.once(cfg, nick, opts)
 	end
 end
 
+-- send(cfg, nick, target, text, pid) -> true, or nil and error. The
+-- daemon answers after the server has taken the message or refused it.
+function M.send(cfg, nick, target, text, pid)
+	local p = M.paths(cfg, nick, "default")
+	local old = nick .. " has no rpc send; the daemon is too old: " ..
+	    "irc-agent stop " .. nick .. "; irc-agent start " .. nick
+
+	signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+	local c, err = M.connect(p.rpc)
+
+	if not c then
+		if not pid() then
+			return nil, nick .. " is not running; start it: irc-agent start " .. nick
+		end
+		return nil, err == "missing" and old or err
+	end
+
+	local typ, h = c:call(rpc.T.HELLO, 0, rpc.hello(nick, "default"))
+
+	if not typ then
+		c:close()
+		return nil, "hello: " .. tostring(h)
+	end
+
+	local rtyp, r, e = c:call(rpc.T.CONTROL, 0, rpc.control("send", target, text))
+
+	c:close()
+	if rtyp == rpc.T.CONTROL_R then
+		return true
+	end
+	if e and e.opcode == rpc.E.DISABLED then
+		return nil, old
+	end
+	if rtyp then
+		return nil, "unexpected reply type " .. rtyp
+	end
+	return nil, tostring(r)
+end
+
 return M

@@ -122,3 +122,13 @@ describe("rpc over imsg", function()
 		bb:close(true)
 	end)
 end)
+
+describe("rpc control", function()
+	it("round-trips a send and refuses an empty target", function()
+		local r = rpc.uncontrol(rpc.control("send", "#agents", "a\nb"))
+
+		assert.same({ cmd = "send", target = "#agents", text = "a\nb" }, r)
+		assert.is_nil(rpc.uncontrol(rpc.control("send", "", "x")))
+		assert.is_nil(rpc.uncontrol("status"))
+	end)
+end)

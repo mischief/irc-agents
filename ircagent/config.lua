@@ -56,6 +56,9 @@ M.DEFAULTS = {
 	-- idle OpenBSD connection without the kernel reporting it promptly
 	idle_ping = 60,
 	idle_timeout = 120,
+	-- seconds send waits for the server to take a message, plus one
+	-- per line queued ahead of it
+	send_wait = 10,
 	-- commands written to in while disconnected wait for the next
 	-- connection, up to this many
 	queue_max = 100,

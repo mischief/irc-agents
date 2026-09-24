@@ -42,6 +42,8 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
          mention in #chan  ->  irc-agent send NICK '#chan' 'reply'
        Quote the text. Long and multi-line text is fine (up to ~16 KB);
        use - as TEXT to read it from stdin.
+       It returns when the server has taken the message. Exit 1 says
+       why not: the nick is not in the channel, or no connection.
 
   4. irc-agent stop NICK      when you are done.
 

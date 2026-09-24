@@ -46,10 +46,10 @@ local function ev(kind, text)
 end
 
 -- a daemon without IRC: the journal and the socket
-local function daemon(dir)
+local function daemon(dir, control)
 	local j = journal.open(dir .. "/" .. NICK, { levels = levels })
 	local srv = assert(rpcd.new { path = dir .. "/" .. NICK .. "/rpc", nick = NICK,
-	    journal = j, want = want })
+	    journal = j, want = want, control = control })
 
 	return {
 		j = j, srv = srv,
@@ -73,12 +73,12 @@ local function daemon(dir)
 end
 
 -- run steps in a child daemon: { { at = seconds, fn = function(d) } }
-local function serve(dir, steps, limit)
+local function serve(dir, steps, limit, control)
 	local pid = unistd.fork()
 
 	if pid == 0 then
 		local ok = pcall(function()
-			local d = daemon(dir)
+			local d = daemon(dir, control)
 			local t0, i = clock(), 1
 
 			while clock() - t0 < (limit or 3) do
@@ -187,7 +187,7 @@ describe("rpcd in process", function()
 
 		c = assert(rpcc.connect(dir .. "/" .. NICK .. "/rpc"))
 		call(c, rpc.T.HELLO, 0, rpc.hello(NICK, "default"))
-		typ, p = call(c, rpc.T.CONTROL, 0, "status")
+		typ, p = call(c, rpc.T.CONTROL, 0, rpc.control("send", "bob", "hi"))
 		assert.equal(rpc.E.DISABLED, p.opcode)
 		c:close()
 	end)
@@ -419,5 +419,84 @@ describe("watch --once", function()
 		ok, err = once(dir, { pid = function() return nil end })
 		assert.is_nil(ok)
 		assert.matches("not running", err)
+	end)
+end)
+
+describe("send over rpc", function()
+	local dir
+
+	before_each(function()
+		dir = tmpdir()
+	end)
+
+	after_each(function()
+		os.execute("rm -rf " .. dir)
+	end)
+
+	local function send(target, text, pid)
+		return rpcc.send({ dir = dir }, NICK, target, text,
+		    pid or function() return 1 end)
+	end
+
+	it("waits for the daemon to answer", function()
+		local pending
+
+		local pid = serve(dir, {
+			{ at = 0.5, fn = function() pending(nil, "sent") end },
+		}, 2, function(req, done)
+			if req.cmd == "send" and req.target == "bob" and req.text == "hi\nthere" then
+				pending = done
+			else
+				done(rpc.E.UNSENT, "bad request")
+			end
+		end)
+		local t0 = clock()
+
+		assert.is_true(send("bob", "hi\nthere"))
+		assert.is_true(clock() - t0 >= 0.4)
+		reap(pid)
+	end)
+
+	it("returns the daemon's refusal", function()
+		local pid = serve(dir, {}, 2, function(req, done)
+			done(rpc.E.NOSUCH, req.target .. " is not in #agents")
+		end)
+		local ok, err = send("bob", "hi")
+
+		assert.is_nil(ok)
+		assert.equal("bob is not in #agents", err)
+		reap(pid)
+	end)
+
+	it("says so when the daemon has no rpc send", function()
+		local pid = serve(dir, {}, 2)
+		local ok, err = send("bob", "hi")
+
+		assert.is_nil(ok)
+		assert.matches("too old", err)
+		reap(pid)
+		ok, err = send("bob", "hi", function() return nil end)
+		assert.is_nil(ok)
+		assert.matches("not running", err)
+	end)
+
+	it("drops an answer for a client that left", function()
+		local pending
+		local d = daemon(dir, function(_, done) pending = done end)
+		local c = assert(rpcc.connect(dir .. "/" .. NICK .. "/rpc"))
+
+		c:send(rpc.T.HELLO, rpc.OP[rpc.T.HELLO], 0, rpc.hello(NICK, "default"))
+		c:send(rpc.T.CONTROL, rpc.OP[rpc.T.CONTROL], 0, rpc.control("send", "bob", "hi"))
+		for _ = 1, 20 do
+			d.pump(10)
+		end
+		assert.is_function(pending)
+		c:close()
+		for _ = 1, 20 do
+			d.pump(10)
+		end
+		assert.equal(0, #d.srv:list())
+		pending(nil, "sent")
+		d.close()
 	end)
 end)
