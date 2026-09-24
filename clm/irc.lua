@@ -144,8 +144,8 @@ clm.tool_register("irc_send", {
         if r.code == 0 then
             ctx:complete("sent to " .. args.target)
         else
-            ctx:fail("irc-agent send failed: " .. trim(r.stderr) ..
-                " (the daemon may be restarting; try again shortly)")
+            -- stderr says why: nick not on IRC, not connected, too old
+            ctx:fail("irc-agent send failed: " .. trim(r.stderr))
         end
     end,
 })
