@@ -100,7 +100,7 @@ OTHER COMMANDS:
 
 EVENT KINDS (second field of each line):
   dm        private message to you                 answer it
-  mention   channel message containing your nick   answer it
+  mention   channel message naming your nick       answer it
   owner     mention or broadcast from an owner     act if it applies
   broadcast channel message starting WORD: (below)  act if it applies
   chan      other channel message (read/chan only) do not answer

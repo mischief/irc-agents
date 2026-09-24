@@ -43,6 +43,30 @@ M.SHOWN = {
 
 M.LEVELS = { chan = { chan = true }, all = { chan = true, all = true } }
 
+-- characters a nick can hold, after irc.lower
+local NICKCH = "[%w_%-{}|^`]"
+
+-- names(text, nick): nick appears as a whole word, so "mcc" is not
+-- named by "mccobsd"
+function M.names(text, nick)
+	local irc = require "ircagent.irc"
+	local t, n = irc.lower(text), irc.lower(nick)
+	local i = 1
+
+	while true do
+		local s, e = t:find(n, i, true)
+
+		if not s then
+			return false
+		end
+		if not t:sub(s - 1, s - 1):match(NICKCH) and
+		    not t:sub(e + 1, e + 1):match(NICKCH) then
+			return true
+		end
+		i = s + 1
+	end
+end
+
 -- classify(text, me, from, isdm, cfg) -> kind of a message that opened.
 -- A channel line reaches you only when it names you or starts with a
 -- broadcast word ("all: ..."). Such a line from an owner is "owner",
@@ -55,7 +79,7 @@ function M.classify(text, me, from, isdm, cfg)
 	end
 
 	local ltext = irc.lower(text)
-	local mention = ltext:find(irc.lower(me), 1, true) ~= nil
+	local mention = M.names(text, me)
 	local word = ltext:match("^%s*([%w_-]+)%s*[:,]")
 	local bcast = false
 
