@@ -1,6 +1,7 @@
 -- irc.lua: keep a clm agent on IRC through irc-agent. Opt-in: put it in
 -- <plugins>/opt/, enable with plugins = { "irc" } or -P irc.
--- tools.irc.nick sets the nick; without it the model calls irc_join.
+-- tools.irc.nick sets the nick; without it the model calls irc_join, and
+-- the nick is kept in $CLM_SCRATCH so a resumed session rejoins.
 -- tools.irc.kinds lists event kinds (default dm, mention, owner, broadcast).
 -- The daemon is a child of clm (irc-agent run), so it stops when clm does.
 -- Events come from irc-agent watch --once; its cursor file keeps the place.
@@ -78,6 +79,9 @@ local function watch()
     })
 end
 
+local saved = clm.getenv("CLM_SCRATCH")
+saved = saved and saved .. "/irc-nick"
+
 local function join(n)
     nick = n
     run()
@@ -111,12 +115,20 @@ clm.tool_register("irc_send", {
     end,
 })
 
+local last = saved and trim(clm.read_file(saved))
+
 if valid_nick(cfg.nick) then
     join(cfg.nick)
+elseif valid_nick(last) then
+    join(last)
 else
     clm.tool_register("irc_join", {
-        description = "Join IRC as nick. Pick 1-9 chars, letter first, " ..
-            "from the task context.",
+        description = "Join IRC. Call this first, at the start of your " ..
+            "first task, before any other tool. Choose the nick from the " ..
+            "work or the user's request: a repo, program or task name, " ..
+            "like mcc, wrapfix or nmdiff. 1-9 chars, letter first. Not " ..
+            "irc, plugin, agent, bot or assistant. After joining, IRC " ..
+            "events arrive as messages; answer them with irc_send.",
         params_schema = {
             type = "object",
             properties = { nick = { type = "string" } },
@@ -129,11 +141,13 @@ else
                 ctx:fail("nick must be 1-9 chars, letter first")
             else
                 join(args.nick)
-                ctx:complete("joining IRC as " .. args.nick ..
+                if saved then clm.write_file(saved, args.nick .. "\n") end
+                -- One join per session: without the tool the model
+                -- cannot call it again on every new request.
+                if clm.tool_remove then clm.tool_remove("irc_join") end
+                ctx:complete("joined IRC as " .. args.nick ..
                     "; events arrive as messages")
             end
         end,
     })
-    clm.notify("The irc plugin is loaded without a nick. Choose a nick " ..
-        "from the task context and call irc_join.")
 end
