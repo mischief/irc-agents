@@ -25,27 +25,11 @@ local function trim(s)
     return ((s or ""):gsub("%s+$", ""))
 end
 
--- Run the daemon. Another daemon for the same nick (started by hand or
--- by another session) makes run exit; then we use that one and try to
--- take over again later.
-local function run()
-    local h = clm.spawn({ IRC, "run", nick }, {
-        on_exit = function(code, signal, stderr)
-            local why = trim(stderr)
-            if not why:match("already running") then
-                clm.notify("irc: the irc-agent daemon exited (" ..
-                    tostring(code or "signal " .. signal) .. ")" ..
-                    (why ~= "" and ": " .. why or "") .. "; restarting")
-            end
-            clm.after(run_wait, run)
-            run_wait = math.min(run_wait * 2, 60000)
-        end,
-    })
-    -- A daemon that stays up resets the wait.
-    clm.after(30000, function()
-        if h:running() then run_wait = 1000 end
-    end)
-end
+-- One nick is one agent: the plugin watches only a daemon it started.
+-- A daemon for the nick from anywhere else (by hand, another session)
+-- means the nick is in use; the plugin waits and takes it once it is free.
+local owned, watching, told = false, false, false
+local claim, watch
 
 local function deliver(line)
     -- TIME KIND FROM TARGET TEXT
@@ -55,7 +39,59 @@ local function deliver(line)
     end
 end
 
-local function watch()
+local function retry_claim()
+    clm.after(run_wait, claim)
+    run_wait = math.min(run_wait * 2, 60000)
+end
+
+local function run()
+    owned = true
+    local h = clm.spawn({ IRC, "run", nick }, {
+        on_exit = function(code, signal, stderr)
+            local why = trim(stderr)
+            owned = false
+            if not why:match("already running") then
+                clm.notify("irc: the irc-agent daemon exited (" ..
+                    tostring(code or "signal " .. signal) .. ")" ..
+                    (why ~= "" and ": " .. why or "") .. "; restarting")
+            end
+            retry_claim()
+        end,
+    })
+    -- A daemon that stays up resets the wait.
+    clm.after(30000, function()
+        if h:running() then run_wait = 1000 end
+    end)
+    if not watching then
+        watching = true
+        watch()
+    end
+end
+
+-- Start the daemon unless the nick already has one elsewhere.
+claim = function()
+    clm.spawn({ IRC, "status", nick }, {
+        on_exit = function(code)
+            if code ~= 0 then
+                told = false
+                run()
+                return
+            end
+            if not told then
+                told = true
+                clm.notify("irc: nick " .. nick .. " is in use by another " ..
+                    "process, so you are not on IRC. clm joins when it is free.")
+            end
+            retry_claim()
+        end,
+    })
+end
+
+watch = function()
+    if not owned then
+        watching = false
+        return
+    end
     local lines = {}
     clm.spawn({ IRC, "watch", nick, "--once" }, {
         on_line = function(line)
@@ -84,8 +120,7 @@ saved = saved and saved .. "/irc-nick"
 
 local function join(n)
     nick = n
-    run()
-    watch()
+    claim()
 end
 
 clm.tool_register("irc_send", {
@@ -139,6 +174,9 @@ else
                 ctx:fail("already on IRC as " .. nick)
             elseif not valid_nick(args.nick) then
                 ctx:fail("nick must be 1-9 chars, letter first")
+            elseif clm.exec({ IRC, "status", args.nick }).code == 0 then
+                ctx:fail("nick " .. args.nick .. " is in use by another " ..
+                    "process; choose another")
             else
                 join(args.nick)
                 if saved then clm.write_file(saved, args.nick .. "\n") end
