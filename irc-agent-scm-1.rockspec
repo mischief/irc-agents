@@ -26,7 +26,8 @@ supported_platforms = { 'unix' }
 dependencies = {
   'lua >= 5.3',
   'luaposix',
-  'imsg >= 0.2',
+  -- "< 1" rejects imsg scm rocks, which luarocks ranks above any release
+  'imsg >= 0.2, < 1',
 }
 
 build = {
