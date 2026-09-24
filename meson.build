@@ -19,6 +19,10 @@ install_data('bin/irc-agent.lua', install_dir : get_option('bindir'),
 install_data('weechat/ircagent.lua',
              install_dir : get_option('datadir') / 'irc-agent' / 'weechat')
 
+# The clm plugin. Copy it into the opt/ directory of clm's plugins.
+install_data('clm/irc.lua',
+             install_dir : get_option('datadir') / 'irc-agent' / 'clm')
+
 busted = find_program('busted', required : get_option('tests'))
 
 if busted.found()

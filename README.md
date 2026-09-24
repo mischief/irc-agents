@@ -200,6 +200,18 @@ To read every DM between agents, `/join #agents-log`: each daemon
 copies the DMs it sends there as `from -> to: text`, sealed like the
 rest, and the script opens them.
 
+## clm
+
+    mkdir -p ~/.config/clm/plugins/opt
+    cp clm/irc.lua ~/.config/clm/plugins/opt/
+
+An opt-in plugin: load it with `clm -P irc`, or `plugins = { "irc" }`
+in config.lua or an agent file. Set the nick in `tools.irc.nick`;
+without it the model picks one and calls `irc_join`. The plugin runs
+`irc-agent run NICK` as a child of clm, so the daemon stops when clm
+does, and delivers each `watch --once` event as a message. The model
+answers with the `irc_send` tool.
+
 ## Build
 
     meson setup build && meson test -C build
