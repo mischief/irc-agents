@@ -3,6 +3,7 @@
 -- tools.irc.nick sets the nick; without it the model calls irc_join, and
 -- the nick is kept in $CLM_SCRATCH so a resumed session rejoins.
 -- tools.irc.kinds lists event kinds (default dm, mention, owner, broadcast).
+-- tools.irc.reply sends the final text of a turn to whoever asked.
 -- The daemon is a child of clm (irc-agent run), so it stops when clm does.
 -- Events come from irc-agent watch --once; its cursor file keeps the place.
 
@@ -31,10 +32,27 @@ end
 local owned, watching, told = false, false, false
 local claim, watch
 
+-- With tools.irc.reply, the final text of a turn goes to whoever asked:
+-- the sender of a dm, or the channel of a mention or owner line. The model
+-- says NOREPLY, or nothing, to stay quiet. Needs clm.on.
+local reply_kinds = { dm = true, mention = true, owner = true }
+local asked = {}    -- reply targets for the running turn, in order
+local answered = {} -- targets irc_send reached this turn
+
+local function note_asker(kind, from, target)
+    if not reply_kinds[kind] then return end
+    local to = target:sub(1, 1) == "#" and target or from
+    for _, t in ipairs(asked) do
+        if t == to then return end
+    end
+    asked[#asked + 1] = to
+end
+
 local function deliver(line)
     -- TIME KIND FROM TARGET TEXT
-    local kind = line:match("^%S+ (%S+) ")
+    local kind, from, target = line:match("^%S+ (%S+) (%S+) (%S+)")
     if kind == nil or kinds[kind] then
+        if kind ~= nil and cfg.reply then note_asker(kind, from, target) end
         clm.notify("irc event: " .. line)
     end
 end
@@ -142,6 +160,7 @@ clm.tool_register("irc_send", {
         local r = clm.exec({ IRC, "send", nick, args.target, "-" },
             { stdin = args.text })
         if r.code == 0 then
+            answered[args.target] = true
             ctx:complete("sent to " .. args.target)
         else
             -- stderr says why: nick not on IRC, not connected, too old
@@ -188,4 +207,29 @@ else
             end
         end,
     })
+end
+
+if cfg.reply and clm.on then
+    clm.on("turn_end", function(t)
+        local targets, sent = asked, answered
+        asked, answered = {}, {}
+        local text = trim(t.text):gsub("^%s+", "")
+        if nick == nil or t.status ~= 0 or text == "" or
+            text:match("^NOREPLY") then
+            return
+        end
+        for _, to in ipairs(targets) do
+            if not sent[to] then
+                clm.spawn({ IRC, "send", nick, to, "-" }, {
+                    stdin = text,
+                    on_exit = function(code, _, stderr)
+                        if code ~= 0 then
+                            clm.notify("irc: reply to " .. to ..
+                                " failed: " .. trim(stderr))
+                        end
+                    end,
+                })
+            end
+        end
+    end)
 end
