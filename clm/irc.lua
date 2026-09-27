@@ -30,7 +30,7 @@ end
 -- A daemon for the nick from anywhere else (by hand, another session)
 -- means the nick is in use; the plugin waits and takes it once it is free.
 local owned, watching, told = false, false, false
-local claim, watch
+local claim, watch, nick_taken
 
 -- With tools.irc.reply, the final text of a turn goes to whoever asked:
 -- the sender of a dm, or the channel of a mention or owner line. The model
@@ -68,6 +68,10 @@ local function run()
         on_exit = function(code, signal, stderr)
             local why = trim(stderr)
             owned = false
+            if why:match("nick in use") then
+                nick_taken(why)
+                return
+            end
             if not why:match("already running") then
                 clm.notify("irc: the irc-agent daemon exited (" ..
                     tostring(code or "signal " .. signal) .. ")" ..
@@ -171,16 +175,12 @@ clm.tool_register("irc_send", {
 
 local last = saved and trim(clm.read_file(saved))
 
-if valid_nick(cfg.nick) then
-    join(cfg.nick)
-elseif valid_nick(last) then
-    join(last)
-else
+local function register_join()
     clm.tool_register("irc_join", {
         description = "Join IRC. Call this first, at the start of your " ..
             "first task, before any other tool. Choose the nick from the " ..
             "work or the user's request: a repo, program or task name, " ..
-            "like mcc, wrapfix or nmdiff. 1-9 chars, letter first. Not " ..
+            "like wrapfix or nmdiff. 1-9 chars, letter first. Not " ..
             "irc, plugin, agent, bot or assistant. After joining, IRC " ..
             "events arrive as messages; answer them with irc_send.",
         params_schema = {
@@ -207,6 +207,24 @@ else
             end
         end,
     })
+end
+
+-- The server gave the nick to someone else: forget it, and let the model
+-- pick another.
+nick_taken = function(why)
+    nick = nil
+    if saved then clm.write_file(saved, "") end
+    clm.notify("irc: " .. why .. ". You are not on IRC; call irc_join " ..
+        "with another nick.")
+    pcall(register_join)
+end
+
+if valid_nick(cfg.nick) then
+    join(cfg.nick)
+elseif valid_nick(last) then
+    join(last)
+else
+    register_join()
 end
 
 if cfg.reply and clm.on then
