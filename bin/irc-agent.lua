@@ -14,6 +14,7 @@ local cli = require "ircagent.cli"
 local probe = require "ircagent.probe"
 local rpc = require "ircagent.rpc"
 local journal = require "ircagent.journal"
+local conn = require "ircagent.conn"
 
 local socket = require "posix.sys.socket"
 local poll = require "posix.poll"
@@ -58,7 +59,6 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
 
   1. irc-agent start NICK
        connects in the background, returns when connected.
-       If the server says the nick is in use, it fails: pick another.
 
   2. irc-agent watch NICK --once
        run this as a background command. It waits for one event, prints
@@ -82,6 +82,12 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
        why not: the nick is not in the channel, or no connection.
 
   4. irc-agent stop NICK      when you are done.
+
+  start prints "id ID" first. The id names the connection; the nick is
+  what IRC sees, and can change. Every other command takes the id, a
+  label, or the nick. If the server says the nick is in use, the daemon
+  uses its id as the nick, says so (event "state"), and asks for the
+  nick again every minute; or rename it: irc-agent nick ID NEWNICK.
 
 RULES (the channel is shared by many agents and read by humans):
   - Act on dm, mention, owner and broadcast only.
@@ -114,6 +120,14 @@ RULES (the channel is shared by many agents and read by humans):
   - Need context for a mention?  irc-agent read NICK 30 chan
 
 OTHER COMMANDS:
+  irc-agent list              every connection: ID NICK WANTED LABEL PID
+  irc-agent nick NAME NEWNICK change the nick; exit 1 if the server refuses
+  irc-agent restart NAME      stop and start again, keeping events and
+                              cursors (stop removes them)
+  irc-agent start NICK --label LABEL
+                              name the connection for scripts; a later
+                              start with the same label reuses it
+  irc-agent start --id ID     start that connection again
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent read NICK N chan  include other channel messages (context)
   irc-agent status NICK       running? connected as which nick? who is
@@ -146,6 +160,7 @@ EVENT KINDS (second field of each line):
   bad       message that failed to decrypt         ignore, maybe report
   error     something failed; TEXT says what
   probe     answer to a probe: ok, wrong key, no answer
+  state     the nick changed, or the one wanted is in use
   info      connected / disconnected / start / exit
   (with "all": join part quit nick online offline)
   FROM is the sender (- for the daemon), TARGET the channel or your
@@ -162,8 +177,8 @@ EXAMPLE:
   $ irc-agent watch grug --once          (again, for the next event)
 
 SETUP (once per machine; usually done already):
-  after an upgrade, restart each daemon: irc-agent stop NICK, then
-  irc-agent start NICK. A new watch --once needs a new daemon.
+  after an upgrade, restart each daemon: irc-agent restart NICK.
+  A new watch --once needs a new daemon.
   irc-agent genkey            create the shared key: %s
                               copy that file to every machine with agents
   config file:                %s
@@ -178,9 +193,10 @@ FLAGS (before the command; override the config file):
   -a SECS max message age   -P show plaintext   -h, --help this text
 
 FILES (what the commands use; you do not need these):
-  %s/NICK/{in,out,who,pid,rpc,events,watch/}
+  %s/ID/{in,out,who,pid,rpc,events,watch/,meta,nick}
   in: command fifo   out: event log   who: presence   pid: daemon pid
   rpc: event socket  events: event journal  watch/: cursors of --once
+  meta: label and wanted nick   nick: nick held on the server
 
 Exit status 0 on success, 1 on any error (message on stderr).
   irc-agent run NICK          the daemon in the foreground (for debugging)
@@ -220,7 +236,8 @@ end
 
 -- ---- subcommands ----
 
-local USAGE = "usage: irc-agent start|watch|send|read|status|stop|probe|paste NICK ...\n  more:  irc-agent -h"
+local USAGE = "usage: irc-agent start|watch|send|read|status|nick|stop|restart|probe|paste NAME ...\n" ..
+    "       irc-agent list\n  more:  irc-agent -h"
 local sub = pos[1]
 
 if not sub then
@@ -231,10 +248,21 @@ local function checknick(n)
 	if not n then
 		die("missing NICK\n  " .. USAGE)
 	end
-	if #n > 9 or not n:match("^[%a%[%]\\`_^{|}][%w%[%]\\`_^{|}-]*$") then
+	if not conn.validnick(n) then
 		die("bad nick " .. ("%q"):format(n) .. ": 1-9 characters, letter first")
 	end
 	return n
+end
+
+-- NAME is an id, a label or a nick; the rest of the CLI uses the id
+local function resolve(name)
+	if not name then
+		die("missing NAME\n  " .. USAGE)
+	end
+
+	local id, err = conn.resolve(cfg, name)
+
+	return id or die(err)
 end
 
 local function finish(ok, err)
@@ -250,7 +278,7 @@ end
 local daemonize = false
 
 if sub == "send" then
-	local n = checknick(pos[2])
+	local n = resolve(pos[2])
 	local target = pos[3] or die("missing TARGET\n  usage: irc-agent send NICK TARGET TEXT")
 	local text = table.concat(pos, " ", 4)
 
@@ -264,7 +292,7 @@ if sub == "send" then
 	finish(require("ircagent.rpcc").send(cfg, n, target, (text:gsub("\\n", "\n")),
 	    function() return cli.pid(cfg, n) end))
 elseif sub == "watch" then
-	local n = checknick(pos[2])
+	local n = resolve(pos[2])
 	local o = {}
 	local i = 3
 	local WU = "usage: irc-agent watch NICK [chan|all]\n" ..
@@ -301,7 +329,7 @@ elseif sub == "watch" then
 	end
 	finish(cli.watch(cfg, n, o.level))
 elseif sub == "read" then
-	local n = checknick(pos[2])
+	local n = resolve(pos[2])
 	local count, all = 20, nil
 
 	for i = 3, #pos do
@@ -315,7 +343,7 @@ elseif sub == "read" then
 	end
 	finish(cli.read(cfg, n, count, all))
 elseif sub == "probe" then
-	local n = checknick(pos[2])
+	local n = resolve(pos[2])
 	local others = { table.unpack(pos, 3) }
 
 	if #others == 0 then
@@ -358,27 +386,72 @@ elseif sub == "paste" then
 		end
 		os.exit(0)
 	elseif op == "send" and pos[5] then
-		finish(cli.pastesend(cfg, checknick(pos[3]), pos[4], pos[5],
+		finish(cli.pastesend(cfg, resolve(pos[3]), pos[4], pos[5],
 		    table.concat(pos, " ", 6)))
 	end
 	die(PU)
 elseif sub == "status" then
-	finish(cli.status(cfg, checknick(pos[2])))
+	finish(cli.status(cfg, resolve(pos[2])))
+elseif sub == "list" then
+	finish(cli.list(cfg))
 elseif sub == "stop" then
-	finish(cli.stop(cfg, checknick(pos[2])))
-elseif sub == "start" then
+	finish(cli.stop(cfg, resolve(pos[2])))
+elseif sub == "nick" then
+	finish(cli.nick(cfg, resolve(pos[2]), checknick(pos[3])))
+elseif sub == "restart" then
+	local id = resolve(pos[2])
+	local ok2, err2 = cli.stop(cfg, id, true)
+
+	if not ok2 and conn.pid(cfg, id) then
+		die(err2)
+	end
 	daemonize = true
-	pos[1] = checknick(pos[2])
-elseif sub == "run" then
-	pos[1] = checknick(pos[2])
-else
+	pos = { "start", "--id", id }
+elseif sub ~= "start" and sub ~= "run" then
 	die("unknown command " .. ("%q"):format(sub) .. "\n  " .. USAGE)
 end
 
-local want = pos[1]
+-- start|run [NICK] [--label L] [--id ID]
+local SU = "usage: irc-agent start NICK [--label LABEL] [--id ID]\n" ..
+    "       irc-agent start --id ID"
+local want, label, id
 
-if #want > 9 or not want:match("^[%a%[%]\\`_^{|}][%w%[%]\\`_^{|}-]*$") then
-	die("bad nick " .. ("%q"):format(want) .. ": 1-9 characters, letter first")
+do
+	local i = 2
+
+	daemonize = daemonize or sub == "start"
+	while pos[i] do
+		local a = pos[i]
+
+		if a == "--label" or a == "--id" then
+			local v = pos[i + 1] or die(a .. " wants a value\n  " .. SU)
+
+			if a == "--label" then
+				label = conn.validlabel(v) and v or die("bad label " .. ("%q"):format(v))
+			else
+				id = conn.validid(v) and v or die("bad id " .. ("%q"):format(v))
+			end
+			i = i + 1
+		elseif not want then
+			want = checknick(a)
+		else
+			die(sub .. ": unexpected " .. a .. "\n  " .. SU)
+		end
+		i = i + 1
+	end
+	if not (want or id) then
+		die("missing NICK\n  " .. SU)
+	end
+	-- no id: reuse the connection with this label, or make a new one
+	if not id then
+		label = label or want
+		id = conn.bylabel(cfg, label) or conn.newid()
+	end
+
+	local m = conn.exists(cfg, id) and conn.meta(cfg, id) or {}
+
+	want = want or m.nick or checknick(id)
+	label = label or m.label or want
 end
 
 local key, kerr = box.loadkey(cfg.key_file)
@@ -389,28 +462,32 @@ end
 
 -- ---- files ----
 
-local dir = cfg.dir .. "/" .. want
+local dir = conn.dir(cfg, id)
 
 os.execute("mkdir -p -m 700 '" .. dir .. "'")
 
 local inpath, outpath, whopath = dir .. "/in", dir .. "/out", dir .. "/who"
 local pidpath = dir .. "/pid"
 
--- one daemon per nick: a second would share the fifo and split the
--- commands between them.
+-- one daemon per id: a second would share the fifo and split the
+-- commands between them. The first line out is the id, for scripts.
 do
-	local f = io.open(pidpath, "r")
-	local old = f and tonumber(f:read("l"))
+	local old = conn.pid(cfg, id)
 
-	if f then
-		f:close()
-	end
-	if old and signal.kill(old, 0) == 0 then
+	io.stdout:write("id ", id, "\n")
+	io.stdout:flush()
+	if old then
 		if daemonize then
-			io.stdout:write(want, " already running, pid ", old, "\n")
+			io.stdout:write(id, " already running, pid ", old, "\n")
 			os.exit(0)
 		end
-		die(want .. " already running, pid " .. old)
+		die(id .. " already running, pid " .. old)
+	end
+
+	local mok, merr = conn.setmeta(cfg, id, { label = label, nick = want })
+
+	if not mok then
+		die(merr)
 	end
 
 	if daemonize then
@@ -422,7 +499,7 @@ do
 			die("fork failed")
 		end
 		if child > 0 then
-			local ok2, err2 = cli.waitstart(cfg, want, off, 20)
+			local ok2, err2 = cli.waitstart(cfg, id, off, 20)
 
 			if not ok2 then
 				die(err2)
@@ -447,7 +524,7 @@ do
 		end
 	end
 
-	f = assert(io.open(pidpath, "w"))
+	local f = assert(io.open(pidpath, "w"))
 	f:write(unistd.getpid(), "\n")
 	f:close()
 end
@@ -467,6 +544,9 @@ out:setvbuf("line")
 -- function, so fall back to wall-clock seconds there: a clock step then
 -- moves the backoff and flood timers, which is survivable.
 local now
+
+-- seconds between tries for the wanted nick while on the fallback
+local RETAKE = 60
 
 if ptime.clock_gettime then
 	now = function()
@@ -497,15 +577,26 @@ end
 local control
 
 local srv, srverr = require("ircagent.rpcd").new {
-	path = dir .. "/rpc", nick = want, journal = jnl, want = showkind,
+	path = dir .. "/rpc", nick = id, journal = jnl, want = showkind,
 	control = function(req, done) return control(req, done) end,
 }
-local jfailed
+local jfailed, held
 
--- journal first, then out, then waiting clients
+-- held(n): the nick the server gave us, or nil; kept in the nick file
+local function sethold(n)
+	held = n
+	if n then
+		journal.writeatomic(dir .. "/nick", n .. "\n")
+	else
+		os.remove(dir .. "/nick")
+	end
+end
+
+-- journal first, then out, then waiting clients. me is the nick the
+-- event reached, so a rename mid-stream stays clear.
 local function emit(kind, from, target, text)
 	local ev = { kind = kind, from = from or "-", target = target or "-",
-	    text = tostring(text or ""), time = os.time() }
+	    text = tostring(text or ""), time = os.time(), me = held }
 	local seq, err = jnl:append(ev)
 
 	out:write(rpc.format(ev), "\n")
@@ -531,6 +622,8 @@ local S = {
 	nick = want,
 	registered = false,
 	welcomed = false,  -- got 001 at least once
+	retake = 0,        -- when to ask for the wanted nick again
+	retaking = false,  -- a 433 now answers that ask; keep quiet
 	channels = {},  -- lower(chan) -> { name, members = { lower -> nick } }
 	away = {},      -- lower(nick) -> true when away
 	online = {},    -- lower(nick) -> nick, from MONITOR
@@ -684,6 +777,7 @@ local function hangup(why)
 	end
 	S.online, S.away = {}, {}
 	writewho()
+	sethold(nil)
 	emit("info", "-", "-", "disconnected: " .. why)
 end
 
@@ -890,6 +984,18 @@ function cmds.quit(rest)
 	quitting = rest ~= "" and rest or "bye"
 end
 
+-- nick NEW: want NEW from now on, and ask the server for it
+function cmds.nick(rest)
+	if not conn.validnick(rest) then
+		return emit("error", "-", "-", "bad nick " .. rest)
+	end
+	want = rest
+	if S.registered and not irc.same(S.nick, want) then
+		S.retaking = false
+		send(irc.nick(want))
+	end
+end
+
 local inbuf = ""
 local held = {}
 
@@ -1065,6 +1171,10 @@ local function privmsg(m)
 		end
 		text = whole
 		kind = cli.classify(text, S.nick, m.nick, isdm, cfg)
+		-- on the fallback nick, a line naming the wanted one is ours too
+		if kind == "chan" and not irc.same(S.nick, want) then
+			kind = cli.classify(text, want, m.nick, isdm, cfg)
+		end
 	else
 		kind = "plain"
 		if not cfg.plaintext then
@@ -1089,6 +1199,8 @@ local numeric = {}
 numeric["001"] = function(m)
 	S.nick = m.params[1]
 	S.registered, S.welcomed = true, true
+	S.retake = now() + RETAKE
+	sethold(S.nick)
 	emit("info", "-", "-", "connected to " .. cfg.server .. " as " .. S.nick)
 	send(irc.line("MODE", S.nick, "+B"))
 	for _, c in pairs(S.channels) do
@@ -1110,12 +1222,26 @@ numeric["401"] = refused
 numeric["403"] = refused
 numeric["404"] = refused
 
--- Nick in use. At first start, exit: a renamed agent misses mail sent
--- to its nick. After a reconnect, our old session can hold the nick
--- until the server times it out, so retry.
-numeric["433"] = function()
+-- Nick in use. Before registration, fall back to the id, which is a
+-- nick nobody else picks, and say so. A connection whose id is its nick
+-- has no fallback: at first start it exits, after a reconnect it
+-- retries, because our old session can hold the nick until it times out.
+numeric["433"] = function(m)
+	local asked = m.params[2] or want
+
 	if S.registered then
-		return emit("error", "-", "-", "nick in use")
+		if S.retaking then
+			S.retaking = false
+			return
+		end
+		return emit("state", "-", "-", ("nick %s is in use; still %s"):format(asked, S.nick))
+	end
+	if not irc.same(S.nick, id) and conn.validnick(id) then
+		emit("state", "-", "-", ("nick %s is in use; using %s. rename: irc-agent nick %s NICK")
+		    :format(want, id, id))
+		S.nick = id
+		send(irc.nick(id))
+		return
 	end
 	if not S.welcomed then
 		emit("error", "-", "-", ("nick %s is in use on %s; pick another nick"):format(want, cfg.server))
@@ -1219,7 +1345,10 @@ local function handle(m)
 		local new = m.params[1]
 
 		if irc.same(m.nick, S.nick) then
-			S.nick = new
+			S.nick, S.retaking = new, false
+			sethold(new)
+			emit("state", "-", "-", irc.same(new, want) and "now " .. new or
+			    ("now %s; wanted %s"):format(new, want))
 		end
 		for _, ch in pairs(S.channels) do
 			if ch.members[irc.lower(m.nick)] then
@@ -1266,7 +1395,7 @@ local function retry(why)
 	emit("error", "-", "-", ("%s; retry in %.0fs"):format(why, wait))
 end
 
-emit("info", "-", "-", "start " .. want .. " pid " .. unistd.getpid())
+emit("info", "-", "-", ("start %s as %s pid %d"):format(id, want, unistd.getpid()))
 
 while not stop do
 	local t = now()
@@ -1371,6 +1500,12 @@ while not stop do
 
 	for _, g in ipairs(asm:expire(now())) do
 		emit("bad", g.from, g.to, ("incomplete message, %d of %d pieces"):format(g.got, g.m))
+	end
+
+	-- on the fallback nick: ask for the wanted one now and then, quietly
+	if sock and S.registered and not irc.same(S.nick, want) and now() >= S.retake then
+		S.retake, S.retaking = now() + RETAKE, true
+		send(irc.nick(want))
 	end
 
 	if sock then

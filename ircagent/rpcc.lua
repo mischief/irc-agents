@@ -6,6 +6,7 @@ local socket = require "posix.sys.socket"
 local unistd = require "posix.unistd"
 local stat = require "posix.sys.stat"
 local signal = require "posix.signal"
+local fcntl = require "posix.fcntl"
 local imsg = require "imsg"
 
 local rpc = require "ircagent.rpc"
@@ -20,7 +21,29 @@ function M.paths(cfg, nick, consumer)
 	local d = cfg.dir .. "/" .. nick
 
 	return { dir = d, rpc = d .. "/rpc",
-	    cursor = d .. "/watch/" .. consumer .. ".cursor" }
+	    cursor = d .. "/watch/" .. consumer .. ".cursor",
+	    lock = d .. "/watch/" .. consumer .. ".lock" }
+end
+
+-- lock(path) -> fd, or nil and error. Two runs on one cursor would get
+-- the same event each; the lock lasts until this process exits.
+function M.lock(path)
+	local fd = fcntl.open(path, fcntl.O_RDWR | fcntl.O_CREAT, tonumber("600", 8))
+
+	if not fd then
+		return nil, "cannot open " .. path
+	end
+
+	local l = { l_type = fcntl.F_WRLCK, l_whence = 0, l_start = 0, l_len = 0 }
+
+	if fcntl.fcntl(fd, fcntl.F_SETLK, l) then
+		return fd
+	end
+	fcntl.fcntl(fd, fcntl.F_GETLK, l)
+	unistd.close(fd)
+	return nil, ("another watch --once is running on this cursor%s; " ..
+	    "let it finish, or give this one --consumer NAME")
+	    :format(l.l_pid and l.l_pid > 0 and " (pid " .. l.l_pid .. ")" or "")
 end
 
 function M.loadcursor(path)
@@ -155,6 +178,12 @@ function M.once(cfg, nick, opts)
 	-- a daemon that exits mid-write is an error to report, not a kill
 	signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 	stat.mkdir(p.dir .. "/watch", tonumber("700", 8))
+
+	local lk, lerr = M.lock(p.lock)
+
+	if not lk then
+		return nil, lerr
+	end
 	while true do
 		local c, err = M.connect(p.rpc)
 
@@ -164,11 +193,11 @@ function M.once(cfg, nick, opts)
 			end
 			if not deadline then
 				if not opts.pid() then
-					return nil, nick .. " is not running; start it: irc-agent start " .. nick
+					return nil, nick .. " is not running; start it: irc-agent restart " .. nick
 				end
 				if err == "missing" then
 					return nil, nick .. " has no rpc socket; the daemon is too old: " ..
-					    "irc-agent stop " .. nick .. "; irc-agent start " .. nick
+					    "irc-agent restart " .. nick
 				end
 				deadline = os.time() + M.RECONNECT
 			end
@@ -262,7 +291,7 @@ end
 function M.send(cfg, nick, target, text, pid)
 	local p = M.paths(cfg, nick, "default")
 	local old = nick .. " has no rpc send; the daemon is too old: " ..
-	    "irc-agent stop " .. nick .. "; irc-agent start " .. nick
+	    "irc-agent restart " .. nick
 
 	signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
@@ -270,7 +299,7 @@ function M.send(cfg, nick, target, text, pid)
 
 	if not c then
 		if not pid() then
-			return nil, nick .. " is not running; start it: irc-agent start " .. nick
+			return nil, nick .. " is not running; start it: irc-agent restart " .. nick
 		end
 		return nil, err == "missing" and old or err
 	end

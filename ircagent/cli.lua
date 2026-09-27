@@ -2,6 +2,9 @@
 -- has to assemble a tail pipeline or guess at a filter.
 --
 --      start NICK             fork the daemon, wait for it to connect
+--      list                   every connection: id, nick, label, pid
+--      nick NAME NEW          change the nick of a connection
+--      restart NAME           stop and start, keeping the state
 --      send NICK TARGET TEXT  one message ("-" for TEXT reads stdin)
 --      watch NICK [chan|all]  follow events, one per line, forever
 --      watch NICK --once      one event over rpc (rpcc.lua), then exit
@@ -23,6 +26,8 @@ local stat = require "posix.sys.stat"
 local signal = require "posix.signal"
 local ptime = require "posix.time"
 
+local conn = require "ircagent.conn"
+
 local M = {}
 
 -- What a stream wakes an agent for. Three levels:
@@ -38,7 +43,7 @@ local M = {}
 -- there on demand: "irc-agent read NICK 30 chan".
 M.SHOWN = {
 	dm = true, mention = true, owner = true, broadcast = true, plain = true,
-	bad = true, error = true, probe = true,
+	bad = true, error = true, probe = true, state = true,
 }
 
 M.LEVELS = { chan = { chan = true }, all = { chan = true, all = true } }
@@ -214,7 +219,7 @@ end
 -- become the \n escape the daemon turns back into newlines.
 function M.command(cfg, nick, line)
 	if not M.pid(cfg, nick) then
-		return nil, nick .. " is not running; start it: irc-agent start " .. nick
+		return nil, nick .. " is not running; start it: irc-agent restart " .. nick
 	end
 
 	local fd = fcntl.open(paths(cfg, nick)["in"],
@@ -474,7 +479,7 @@ end
 -- pastesend(cfg, nick, target, path, note): put, then tell target
 function M.pastesend(cfg, nick, target, path, note)
 	if not M.pid(cfg, nick) then
-		return nil, nick .. " is not running; start it: irc-agent start " .. nick
+		return nil, nick .. " is not running; start it: irc-agent restart " .. nick
 	end
 
 	local data, err = readall(path)
@@ -519,6 +524,9 @@ function M.waitstart(cfg, nick, off, timeout)
 				emitline(l)
 				return true
 			end
+			if l:find("^%S+ state ") then
+				emitline(l)
+			end
 			if l:find(" error ") then
 				lasterr = l
 			end
@@ -538,56 +546,77 @@ function M.waitstart(cfg, nick, off, timeout)
 	return true
 end
 
-function M.stop(cfg, nick)
-	local pid = M.pid(cfg, nick)
+-- stop(cfg, id, keep): quit and wait. A clean stop removes the state
+-- directory unless keep is set; after SIGTERM it stays, for a restart.
+function M.stop(cfg, id, keep)
+	local pid = M.pid(cfg, id)
 
 	if not pid then
-		return nil, nick .. " is not running"
+		return nil, id .. " is not running"
 	end
 
-	local ok, err = M.command(cfg, nick, "quit")
+	local ok, err = M.command(cfg, id, "quit")
 
 	if not ok then
 		return nil, err
 	end
 	for _ = 1, 40 do
 		if signal.kill(pid, 0) ~= 0 then
-			io.stdout:write(nick, " stopped\n")
+			if not keep and conn.validid(id) then
+				os.execute("rm -rf " .. shquote(paths(cfg, id).dir))
+			end
+			io.stdout:write(id, " stopped\n")
 			return true
 		end
 		sleep(0.25)
 	end
 	signal.kill(pid, signal.SIGTERM)
-	io.stdout:write(nick, " did not quit in 10s; sent SIGTERM\n")
+	io.stdout:write(id, " did not quit in 10s; sent SIGTERM\n")
 	return true
 end
 
-function M.status(cfg, nick)
-	local p = paths(cfg, nick)
-	local pid = M.pid(cfg, nick)
-
-	if not pid then
-		io.stdout:write(nick, ": not running\n")
-		return nil
-	end
-
+-- connected / connecting, from the log; and the nick held, from the
+-- nick file, or from the log for a daemon that writes none
+local function connstate(cfg, id)
 	local irc = require "ircagent.irc"
 	local state, held = "unknown", nil
 
-	-- the nick the server gave us, which a NICK command can change
-	for _, l in ipairs((readfrom(p.out, 0))) do
+	for _, l in ipairs((readfrom(paths(cfg, id).out, 0))) do
 		local as = l:match(" info %- %- connected to %S+ as (%S+)$")
 		local old, new = l:match("^%S+ nick (%S+) (%S+)")
 
 		if as then
-			state, held = "connected as " .. as, as
+			state, held = "connected", as
 		elseif old and held and irc.same(old, held) then
-			state, held = "connected as " .. new, new
+			held = new
 		elseif l:find(" info %- %- disconnected") or l:find(" info %- %- start ") then
-			state = "connecting"
+			state, held = "connecting", nil
 		end
 	end
-	io.stdout:write(("%s: running, pid %d, %s\n"):format(nick, pid, state))
+	return state, conn.held(cfg, id) or held
+end
+
+function M.status(cfg, id)
+	local p = paths(cfg, id)
+	local pid = M.pid(cfg, id)
+	local m = conn.meta(cfg, id)
+	local name = m.label ~= id and ("%s (%s)"):format(id, m.label) or id
+
+	if not pid then
+		io.stdout:write(name, ": not running\n")
+		return nil
+	end
+
+	local irc = require "ircagent.irc"
+	local state, held = connstate(cfg, id)
+
+	if state == "connected" and held then
+		state = "connected as " .. held
+		if not irc.same(held, m.nick) then
+			state = state .. ", wanted " .. m.nick
+		end
+	end
+	io.stdout:write(("%s: running, pid %d, %s\n"):format(name, pid, state))
 
 	local f = io.open(p.who, "r")
 
@@ -599,6 +628,52 @@ function M.status(cfg, nick)
 		f:close()
 	end
 	return true
+end
+
+-- list: one line per connection: ID NICK WANTED LABEL PID|-
+function M.list(cfg)
+	io.stdout:write("ID NICK WANTED LABEL PID\n")
+	for _, c in ipairs(conn.list(cfg)) do
+		local held = c.pid and select(2, connstate(cfg, c.id))
+
+		io.stdout:write(("%s %s %s %s %s\n"):format(c.id, held or "-", c.nick,
+		    c.label, c.pid or "-"))
+	end
+	return true
+end
+
+-- nick(cfg, id, new): want new from now on. A live daemon asks the
+-- server; wait a little for the answer.
+function M.nick(cfg, id, new)
+	local irc = require "ircagent.irc"
+	local m = conn.meta(cfg, id)
+
+	m.nick = new
+
+	local ok, err = conn.setmeta(cfg, id, m)
+
+	if not ok then
+		return nil, err
+	end
+	if not M.pid(cfg, id) then
+		io.stdout:write(id, " wants ", new, "; not running\n")
+		return true
+	end
+	ok, err = M.command(cfg, id, "nick " .. new)
+	if not ok then
+		return nil, err
+	end
+	for _ = 1, 20 do
+		local held = conn.held(cfg, id)
+
+		if held and irc.same(held, new) then
+			io.stdout:write(id, " is ", held, "\n")
+			return true
+		end
+		sleep(0.25)
+	end
+	return nil, ("%s is still %s; the server did not give it %s (see: irc-agent read %s 5)")
+	    :format(id, conn.held(cfg, id) or "unregistered", new, id)
 end
 
 return M

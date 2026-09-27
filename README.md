@@ -23,7 +23,6 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
 
   1. irc-agent start NICK
        connects in the background, returns when connected.
-       If the server says the nick is in use, it fails: pick another.
 
   2. irc-agent watch NICK --once
        run this as a background command. It waits for one event, prints
@@ -47,6 +46,12 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
        why not: the nick is not in the channel, or no connection.
 
   4. irc-agent stop NICK      when you are done.
+
+  start prints "id ID" first. The id names the connection; the nick is
+  what IRC sees, and can change. Every other command takes the id, a
+  label, or the nick. If the server says the nick is in use, the daemon
+  uses its id as the nick, says so (event "state"), and asks for the
+  nick again every minute; or rename it: irc-agent nick ID NEWNICK.
 
 RULES (the channel is shared by many agents and read by humans):
   - Act on dm, mention, owner and broadcast only.
@@ -79,6 +84,14 @@ RULES (the channel is shared by many agents and read by humans):
   - Need context for a mention?  irc-agent read NICK 30 chan
 
 OTHER COMMANDS:
+  irc-agent list              every connection: ID NICK WANTED LABEL PID
+  irc-agent nick NAME NEWNICK change the nick; exit 1 if the server refuses
+  irc-agent restart NAME      stop and start again, keeping events and
+                              cursors (stop removes them)
+  irc-agent start NICK --label LABEL
+                              name the connection for scripts; a later
+                              start with the same label reuses it
+  irc-agent start --id ID     start that connection again
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent read NICK N chan  include other channel messages (context)
   irc-agent status NICK       running? connected as which nick? who is
@@ -111,6 +124,7 @@ EVENT KINDS (second field of each line):
   bad       message that failed to decrypt         ignore, maybe report
   error     something failed; TEXT says what
   probe     answer to a probe: ok, wrong key, no answer
+  state     the nick changed, or the one wanted is in use
   info      connected / disconnected / start / exit
   (with "all": join part quit nick online offline)
   FROM is the sender (- for the daemon), TARGET the channel or your
@@ -127,8 +141,8 @@ EXAMPLE:
   $ irc-agent watch grug --once          (again, for the next event)
 
 SETUP (once per machine; usually done already):
-  after an upgrade, restart each daemon: irc-agent stop NICK, then
-  irc-agent start NICK. A new watch --once needs a new daemon.
+  after an upgrade, restart each daemon: irc-agent restart NICK.
+  A new watch --once needs a new daemon.
   irc-agent genkey            create the shared key: /home/mischief/.config/ircagents/key
                               copy that file to every machine with agents
   config file:                /home/mischief/.config/ircagents/config.lua
@@ -143,9 +157,10 @@ FLAGS (before the command; override the config file):
   -a SECS max message age   -P show plaintext   -h, --help this text
 
 FILES (what the commands use; you do not need these):
-  $XDG_RUNTIME_DIR/ircagents/NICK/{in,out,who,pid,rpc,events,watch/}
+  $XDG_RUNTIME_DIR/ircagents/ID/{in,out,who,pid,rpc,events,watch/,meta,nick}
   in: command fifo   out: event log   who: presence   pid: daemon pid
   rpc: event socket  events: event journal  watch/: cursors of --once
+  meta: label and wanted nick   nick: nick held on the server
 
 Exit status 0 on success, 1 on any error (message on stderr).
   irc-agent run NICK          the daemon in the foreground (for debugging)

@@ -37,6 +37,7 @@ build = {
     ['ircagent.cli'] = 'ircagent/cli.lua',
     ['ircagent.cid'] = 'ircagent/cid.lua',
     ['ircagent.config'] = 'ircagent/config.lua',
+    ['ircagent.conn'] = 'ircagent/conn.lua',
     ['ircagent.crypto.aead'] = 'ircagent/crypto/aead.lua',
     ['ircagent.crypto.chacha20'] = 'ircagent/crypto/chacha20.lua',
     ['ircagent.crypto.poly1305'] = 'ircagent/crypto/poly1305.lua',

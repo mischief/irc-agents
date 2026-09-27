@@ -107,20 +107,23 @@ end
 -- ---- event ----
 
 local EV = ">s1s1s1s4I8"
+local EVME = EV .. "s1"
 
--- ev = { kind, from, target, text, time }
+-- ev = { kind, from, target, text, time, me }. me, the nick the event
+-- reached, is optional; journals written without it still decode.
 function M.event(ev)
-	return EV:pack(ev.kind, ev.from or "-", ev.target or "-", ev.text or "",
-	    ev.time or 0)
+	return EVME:pack(ev.kind, ev.from or "-", ev.target or "-", ev.text or "",
+	    ev.time or 0, ev.me or "")
 end
 
 function M.unevent(body)
-	local t = unpackall(EV, body)
+	local t = unpackall(EVME, body) or unpackall(EV, body)
 
 	if not t or t[1] == "" or t[5] < 0 then
 		return nil
 	end
-	return { kind = t[1], from = t[2], target = t[3], text = t[4], time = t[5] }
+	return { kind = t[1], from = t[2], target = t[3], text = t[4], time = t[5],
+	    me = t[6] ~= "" and t[6] or nil }
 end
 
 local function esc(s)

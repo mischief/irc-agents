@@ -57,8 +57,19 @@ describe("rpc bodies", function()
 		local b = rpc.event { kind = "dm", text = "x", time = 1 }
 
 		assert.is_nil(rpc.unevent(b .. "z"))
-		assert.is_nil(rpc.unevent(b:sub(1, -2)))
+		assert.is_nil(rpc.unevent(b:sub(1, -3)))
 		assert.is_nil(rpc.unevent(rpc.event { kind = "", time = 1 }))
+	end)
+
+	it("carries the nick an event reached, and reads events without it", function()
+		local ev = { kind = "dm", from = "a", target = "b", text = "x", time = 1, me = "b" }
+
+		assert.same(ev, rpc.unevent(rpc.event(ev)))
+
+		local old = (">s1s1s1s4I8"):pack("dm", "a", "b", "x", 1)
+
+		assert.same({ kind = "dm", from = "a", target = "b", text = "x", time = 1 },
+		    rpc.unevent(old))
 	end)
 
 	it("formats an event as the out line", function()

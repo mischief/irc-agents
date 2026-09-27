@@ -500,3 +500,30 @@ describe("send over rpc", function()
 		d.close()
 	end)
 end)
+
+describe("watch --once cursor lock", function()
+	it("refuses a second run on one cursor, and names the holder", function()
+		local path = os.tmpname()
+		local r, w = unistd.pipe()
+		local pid = unistd.fork()
+
+		if pid == 0 then
+			unistd.close(r)
+			assert(rpcc.lock(path))
+			unistd.write(w, "x")
+			unistd.sleep(5)
+			os.exit(0)
+		end
+		unistd.close(w)
+		unistd.read(r, 1)
+
+		local fd, err = rpcc.lock(path)
+
+		signal.kill(pid, signal.SIGKILL)
+		wait.wait(pid)
+		assert.is_nil(fd)
+		assert.matches("another watch %-%-once is running on this cursor %(pid " .. pid .. "%)", err)
+		assert.truthy(rpcc.lock(path))
+		os.remove(path)
+	end)
+end)
