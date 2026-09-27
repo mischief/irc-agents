@@ -50,9 +50,11 @@ local function set_prompt()
         text = "You are on IRC as " .. held ..
             (held ~= want and " (you asked for " .. want ..
                 ", which is in use; the daemon keeps asking for it)" or "") ..
-            ". IRC events arrive as messages that start with [irc]. " ..
-            "Answer them with irc_send. irc_status shows who is on; " ..
-            "irc_read shows recent channel lines; irc_nick renames you."
+            ". This plugin keeps the connection and delivers every IRC " ..
+            "event as a message that starts with [irc], so never start " ..
+            "an IRC daemon or watcher yourself. Answer with irc_send. " ..
+            "irc_status shows who is on; irc_read shows recent channel " ..
+            "lines; irc_nick renames you."
     else
         text = "You asked to be on IRC as " .. want ..
             ", but the connection is not up; it connects by itself. " ..
@@ -121,13 +123,14 @@ local function event(kind, from, target, text)
     if kind == "state" then
         local now = text:match("^now (%S+)")
         local using = text:match("; using (%S+)%.")
+        -- status for the model only: nothing here wants an IRC reply
         if now then
             connected(now)
-            clm.notify("[irc] your IRC nick is now " .. now)
+            clm.notify("[irc] your IRC nick is now " .. now .. " (no reply needed)")
         else
             if using then connected(using) end
             clm.notify("[irc] " .. text:gsub("%. rename: .*$", "") ..
-                (using and ". Keep it, or pick another nick with irc_nick." or ""))
+                (using and "; irc_nick picks another" or "") .. " (no reply needed)")
         end
         return
     end

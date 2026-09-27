@@ -59,13 +59,13 @@ describe("clm irc plugin", function()
 		w.on_line("T state - - now grug")
 		w.on_exit(0, nil, "")
 		assert.same({
-			"[irc] nick grug is in use; using ab12cd. Keep it, or pick another nick with irc_nick.",
+			"[irc] nick grug is in use; using ab12cd; irc_nick picks another (no reply needed)",
 			"[irc] dm from bob: two\nlines\n(answer with irc_send target=bob)",
 			"[irc] bob in #agents: grug: hi\n(answer with irc_send target=#agents)",
 			"[irc] mischief, a human in charge, in #agents: all: stop\n" ..
 			    "(act on it if it applies to you; answer with irc_send " ..
 			    "target=#agents only if it asks for an answer)",
-			"[irc] your IRC nick is now grug",
+			"[irc] your IRC nick is now grug (no reply needed)",
 		}, S.notes)
 		assert.matches("^You are on IRC as grug%.", S.prompts[#S.prompts])
 		-- no mention of the command line
