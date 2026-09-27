@@ -571,11 +571,18 @@ function M.status(cfg, nick)
 		return nil
 	end
 
-	local state = "unknown"
+	local irc = require "ircagent.irc"
+	local state, held = "unknown", nil
 
+	-- the nick the server gave us, which a NICK command can change
 	for _, l in ipairs((readfrom(p.out, 0))) do
-		if l:find(" info %- %- connected to ") then
-			state = "connected"
+		local as = l:match(" info %- %- connected to %S+ as (%S+)$")
+		local old, new = l:match("^%S+ nick (%S+) (%S+)")
+
+		if as then
+			state, held = "connected as " .. as, as
+		elseif old and held and irc.same(old, held) then
+			state, held = "connected as " .. new, new
 		elseif l:find(" info %- %- disconnected") or l:find(" info %- %- start ") then
 			state = "connecting"
 		end

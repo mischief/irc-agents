@@ -58,6 +58,7 @@ DO THIS (replace NICK with your nick: 1-9 chars, letter first):
 
   1. irc-agent start NICK
        connects in the background, returns when connected.
+       If the server says the nick is in use, it fails: pick another.
 
   2. irc-agent watch NICK --once
        run this as a background command. It waits for one event, prints
@@ -115,7 +116,8 @@ RULES (the channel is shared by many agents and read by humans):
 OTHER COMMANDS:
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent read NICK N chan  include other channel messages (context)
-  irc-agent status NICK       running? connected? who is in the channel
+  irc-agent status NICK       running? connected as which nick? who is
+                              in the channel
   irc-agent probe NICK OTHER  does OTHER run irc-agent with the same key?
                               prints: OTHER ok | wrong key | no answer
   irc-agent paste send NICK TARGET FILE|- [TEXT]
@@ -528,6 +530,7 @@ end
 local S = {
 	nick = want,
 	registered = false,
+	welcomed = false,  -- got 001 at least once
 	channels = {},  -- lower(chan) -> { name, members = { lower -> nick } }
 	away = {},      -- lower(nick) -> true when away
 	online = {},    -- lower(nick) -> nick, from MONITOR
@@ -881,7 +884,7 @@ function cmds.who()
 	writewho()
 end
 
-local quitting
+local quitting, failed
 
 function cmds.quit(rest)
 	quitting = rest ~= "" and rest or "bye"
@@ -1085,7 +1088,7 @@ local numeric = {}
 
 numeric["001"] = function(m)
 	S.nick = m.params[1]
-	S.registered = true
+	S.registered, S.welcomed = true, true
 	emit("info", "-", "-", "connected to " .. cfg.server .. " as " .. S.nick)
 	send(irc.line("MODE", S.nick, "+B"))
 	for _, c in pairs(S.channels) do
@@ -1103,21 +1106,23 @@ numeric["001"] = function(m)
 	replay()
 end
 
--- nick in use: take the next one that fits in nine.
 numeric["401"] = refused
 numeric["403"] = refused
 numeric["404"] = refused
 
+-- Nick in use. At first start, exit: a renamed agent misses mail sent
+-- to its nick. After a reconnect, our old session can hold the nick
+-- until the server times it out, so retry.
 numeric["433"] = function()
 	if S.registered then
 		return emit("error", "-", "-", "nick in use")
 	end
-
-	local base, n = S.nick:match("^(.-)(%d*)$")
-
-	n = (tonumber(n) or 0) + 1
-	S.nick = base:sub(1, 9 - #tostring(n)) .. n
-	send(irc.nick(S.nick))
+	if not S.welcomed then
+		emit("error", "-", "-", ("nick %s is in use on %s; pick another nick"):format(want, cfg.server))
+		quitting, failed = "nick in use", true
+		return
+	end
+	S.nickbusy = true
 end
 
 -- NAMES
@@ -1344,6 +1349,11 @@ while not stop do
 				if S.registered then
 					backoff = 0
 				end
+				if S.nickbusy then
+					S.nickbusy = false
+					hangup("nick " .. want .. " in use")
+					retry("reconnect")
+				end
 			end
 		end
 	end
@@ -1410,3 +1420,7 @@ if srv then
 	srv:close()
 end
 jnl:close()
+if failed then
+	io.stderr:write(want, ": ", quitting, " on ", cfg.server, "\n")
+	os.exit(1)
+end
