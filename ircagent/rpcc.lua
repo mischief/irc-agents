@@ -25,9 +25,10 @@ function M.paths(cfg, nick, consumer)
 	    lock = d .. "/watch/" .. consumer .. ".lock" }
 end
 
--- lock(path) -> fd, or nil and error. Two runs on one cursor would get
--- the same event each; the lock lasts until this process exits.
-function M.lock(path)
+-- lock(path, nowait) -> fd, or nil and error. Two runs on one cursor
+-- would get the same event each, so a second one waits for the first
+-- to finish; the lock lasts until this process exits.
+function M.lock(path, nowait)
 	local fd = fcntl.open(path, fcntl.O_RDWR | fcntl.O_CREAT, tonumber("600", 8))
 
 	if not fd then
@@ -36,13 +37,12 @@ function M.lock(path)
 
 	local l = { l_type = fcntl.F_WRLCK, l_whence = 0, l_start = 0, l_len = 0 }
 
-	if fcntl.fcntl(fd, fcntl.F_SETLK, l) then
+	if fcntl.fcntl(fd, nowait and fcntl.F_SETLK or fcntl.F_SETLKW, l) then
 		return fd
 	end
 	fcntl.fcntl(fd, fcntl.F_GETLK, l)
 	unistd.close(fd)
-	return nil, ("another watch --once is running on this cursor%s; " ..
-	    "let it finish, or give this one --consumer NAME")
+	return nil, ("another watch --once is running on this cursor%s")
 	    :format(l.l_pid and l.l_pid > 0 and " (pid " .. l.l_pid .. ")" or "")
 end
 
