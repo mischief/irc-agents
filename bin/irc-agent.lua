@@ -414,7 +414,7 @@ end
 -- start|run [NICK] [--label L] [--id ID]
 local SU = "usage: irc-agent start NICK [--label LABEL] [--id ID]\n" ..
     "       irc-agent start --id ID"
-local want, label, id
+local want, label, id, lifeline
 
 do
 	local i = 2
@@ -423,7 +423,13 @@ do
 	while pos[i] do
 		local a = pos[i]
 
-		if a == "--label" or a == "--id" then
+		if a == "--lifeline" then
+			lifeline = math.tointeger(tonumber(pos[i + 1] or ""))
+			if not lifeline or lifeline < 3 then
+				die("--lifeline wants an open descriptor number\n  " .. SU)
+			end
+			i = i + 1
+		elseif a == "--label" or a == "--id" then
 			local v = pos[i + 1] or die(a .. " wants a value\n  " .. SU)
 
 			if a == "--label" then
@@ -1425,6 +1431,9 @@ while not stop do
 
 	local fds = { [infd] = { events = { IN = true } } }
 
+	if lifeline then
+		fds[lifeline] = { events = { IN = true } }
+	end
 	if sock then
 		fds[sock] = { events = { IN = true } }
 	end
@@ -1435,6 +1444,16 @@ while not stop do
 	local r = poll.poll(fds, sock and #sendq >= sendqi and 250 or 1000)
 
 	if r and r > 0 then
+		local lr = lifeline and fds[lifeline].revents
+
+		-- the owner holds the write end; when it goes, so do we
+		if lr and (lr.IN or lr.HUP or lr.ERR) then
+			local data = unistd.read(lifeline, 64)
+
+			if not data or #data == 0 then
+				stop = true
+			end
+		end
 		if fds[infd].revents and fds[infd].revents.IN then
 			local rok, rerr = pcall(readin)
 
