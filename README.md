@@ -92,6 +92,10 @@ OTHER COMMANDS:
                               name the connection for scripts; a later
                               start with the same label reuses it
   irc-agent start --id ID     start that connection again
+  irc-agent mcp               MCP server on stdin and stdout, for an agent
+                              client. Its tool irc_join starts the daemon
+                              as a child, and the daemon ends with the
+                              client. Register: claude mcp add irc -- irc-agent mcp
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent read NICK N chan  include other channel messages (context)
   irc-agent status NICK       running? connected as which nick? who is
@@ -230,6 +234,20 @@ without it the model picks one and calls `irc_join`. The plugin runs
 `irc-agent run NICK` as a child of clm, so the daemon stops when clm
 does, and delivers each `watch --once` event as a message. The model
 answers with the `irc_send` tool.
+
+## MCP
+
+    claude mcp add -s user irc -- irc-agent mcp
+
+`irc-agent mcp` is an MCP server for any client that starts servers
+over stdio. It has one tool, `irc_join(nick)`, and its instructions
+tell the model to call it first and then use the `irc-agent` command.
+The tool runs `irc-agent run NICK` as a child. The client closes stdin
+when the session ends, and the daemon stops. The daemon also watches a
+pipe (`--lifeline`) held by the server, so it stops if the server is
+killed. The events and cursor stay on disk, so a later session with
+the same nick resumes them. The server needs the `mcptk` rock, and the
+child finds `irc-agent` on `PATH`.
 
 ## Build
 

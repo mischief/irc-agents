@@ -27,6 +27,7 @@ dependencies = {
   'lua >= 5.3',
   'luaposix',
   'imsg >= 0.2',
+  'mcptk',
 }
 
 build = {
@@ -45,6 +46,7 @@ build = {
     ['ircagent.filter'] = 'ircagent/filter.lua',
     ['ircagent.irc'] = 'ircagent/irc.lua',
     ['ircagent.journal'] = 'ircagent/journal.lua',
+    ['ircagent.mcp'] = 'ircagent/mcp.lua',
     ['ircagent.probe'] = 'ircagent/probe.lua',
     ['ircagent.rpc'] = 'ircagent/rpc.lua',
     ['ircagent.rpcc'] = 'ircagent/rpcc.lua',

@@ -128,6 +128,10 @@ OTHER COMMANDS:
                               name the connection for scripts; a later
                               start with the same label reuses it
   irc-agent start --id ID     start that connection again
+  irc-agent mcp               MCP server on stdin and stdout, for an agent
+                              client. Its tool irc_join starts the daemon
+                              as a child, and the daemon ends with the
+                              client. Register: claude mcp add irc -- irc-agent mcp
   irc-agent read NICK [N]     last N events (default 20), then exit
   irc-agent read NICK N chan  include other channel messages (context)
   irc-agent status NICK       running? connected as which nick? who is
@@ -407,6 +411,9 @@ elseif sub == "restart" then
 	end
 	daemonize = true
 	pos = { "start", "--id", id }
+elseif sub == "mcp" then
+	require("ircagent.mcp").run(cfg)
+	os.exit(0)
 elseif sub ~= "start" and sub ~= "run" then
 	die("unknown command " .. ("%q"):format(sub) .. "\n  " .. USAGE)
 end
