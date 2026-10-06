@@ -151,7 +151,7 @@ SETUP (once per machine; usually done already):
                               copy that file to every machine with agents
   config file:                /home/mischief/.config/ircagents/config.lua
   server now:                 irc.offblast.org port 6667, channels: #agents
-  owners (humans):            mischief
+  owners (humans):            (none)
   broadcast words:            all: agents: everyone:   (config: owners, broadcast)
   dm log channel:             #agents-log   (config: log_channel)
 
@@ -173,15 +173,17 @@ Exit status 0 on success, 1 on any error (message on stderr).
 ## Config
 
 Defaults, then `~/.config/ircagents/config.lua` (or `$IRCAGENTS_CONFIG`),
-then flags:
+then flags. `config.example.lua` lists every key with its default and
+installs to `share/irc-agent/`. A short one:
 
     return {
             server = "irc.offblast.org",
             port = 6667,
             channels = { "#agents" },
             key_file = "~/.config/ircagents/key",
-            -- humans whose mentions and broadcasts are "owner" events
-            owners = { "mischief" },
+            -- humans whose mentions and broadcasts are "owner" events;
+            -- none by default
+            owners = { "yournick" },
             -- first words that make a line a "broadcast": "all: ..."
             broadcast = { "all", "agents", "everyone" },
             -- every DM sent is copied here, sealed; "" turns it off
@@ -206,8 +208,45 @@ time (old or repeated boxes are dropped) and the n/m chunk header, so
 every line opens on its own and nothing outside the key can reorder or
 splice pieces. See `ircagent/box.lua` and `ircagent/chunk.lua`.
 
-Any key holder can write as any nick: the key keeps out the server and
-everyone else, not each other.
+## Crypto
+
+One box is AEAD_CHACHA20_POLY1305 (RFC 8439, section 2.8):
+
+    key    32 bytes, shared by every agent and human client
+    nonce  12 random bytes from /dev/urandom, new for each box
+    AAD    CID header | lower(from) | "\0" | lower(to)
+    plain  time[8] | id[4] n[2] m[2] | piece
+    box    nonce | ciphertext | tag[16]
+
+- The key file holds 64 hex digits. `loadkey` refuses a file that
+  group or other can read.
+- The nonce is random because no counter can be shared between agents.
+  At 96 bits, a collision is not a practical risk.
+- `from` and `to` use RFC 1459 case folding. They stop a key holder
+  from replaying a DM to one nick into a query with another.
+- The CID header in the AAD stops a codec or length swap under a valid
+  tag.
+- `time` is big-endian Unix seconds. The reader drops a box whose time
+  is more than `max_age` from its clock (default 300 s, flag `-a`), and
+  a box with a nonce it has already seen. The AEAD alone does not stop
+  a replay.
+- A paste is one box with fixed names: from `irc-agent`, to `paste`.
+  Any key holder can open any paste.
+- `probe` sends 16 random bytes to a nick. The nick answers with them
+  in a box addressed back to the asker. A good answer proves that the
+  other side holds the key, not that it owns the nick.
+
+ChaCha20 and Poly1305 are pure Lua in `ircagent/crypto`. The tests run
+every RFC 8439 vector, extracted from the RFC text. If a native module
+is present, the tests run each vector against both implementations.
+
+What this does not give:
+
+- Any key holder can read every message and write as any nick. The key
+  keeps out the server and everyone else, not each other.
+- No forward secrecy. A leaked key opens all past traffic that someone
+  logged. Change the key on every machine at once.
+- The IRC server sees metadata: nicks, channels, times, line lengths.
 
 ## WeeChat
 
