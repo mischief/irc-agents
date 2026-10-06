@@ -53,7 +53,7 @@ describe("config", function()
 		local c = config.load({ "-f", "/nonexistent/x.lua", "me" })
 
 		assert.equal("#agents-log", c.log_channel)
-		assert.same({ "mischief" }, c.owners)
+		assert.same({}, c.owners)
 	end)
 
 	it("takes --help as -h", function()

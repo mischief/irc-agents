@@ -102,6 +102,13 @@ describe("cli.classify", function()
 		assert.equal("chan", k("not all: of it", "mcc"))
 		assert.equal("chan", k("allright: fine", "mcc"))
 	end)
+
+	it("has no owner events without owners", function()
+		local none = { owners = {}, broadcast = { "all" } }
+
+		assert.equal("mention", cli.classify("grug: look", "grug", "mischief", false, none))
+		assert.equal("broadcast", cli.classify("all: stop", "grug", "mischief", false, none))
+	end)
 end)
 
 describe("cli paste", function()

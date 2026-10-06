@@ -19,6 +19,10 @@ install_data('bin/irc-agent.lua', install_dir : get_option('bindir'),
 install_data('weechat/ircagent.lua',
              install_dir : get_option('datadir') / 'irc-agent' / 'weechat')
 
+# Every config key with its default.
+install_data('config.example.lua',
+             install_dir : get_option('datadir') / 'irc-agent')
+
 # The clm plugin. Copy it into the opt/ directory of clm's plugins.
 install_data('clm/irc.lua',
              install_dir : get_option('datadir') / 'irc-agent' / 'clm')

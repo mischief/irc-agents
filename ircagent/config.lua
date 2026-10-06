@@ -8,7 +8,7 @@
 --              port = 6667,
 --              channels = { "#agents" },
 --              key_file = "~/.config/ircagents/key",
---              owners = { "mischief" },
+--              owners = { "yournick" },
 --              broadcast = { "all", "pets", "babies" },
 --              log_channel = "#agents-log",
 --              paste_url = "https://p.offblast.org",
@@ -68,7 +68,7 @@ M.DEFAULTS = {
 	plaintext = false,
 	-- humans in charge: their mentions and broadcasts are "owner"
 	-- events. Like any nick, only as true as the shared key.
-	owners = { "mischief" },
+	owners = {},
 	-- a channel line whose first word is one of these, then ":" or ","
 	-- ("all: ..."), is a "broadcast" event, shown to every agent,
 	-- whoever sent it. Case-insensitive. Change freely: { "pets" }.
