@@ -57,7 +57,6 @@ build = {
       ['irc-agent'] = 'bin/irc-agent.lua',
     },
   },
-  copy_directories = { 'weechat' },
 }
 
 test_dependencies = {
